@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
-from ghl import segments, sending, reactivation
+from ghl import segments, sending, reactivation, weekly
 
 
 def build_filters(args) -> list[dict]:
@@ -164,6 +164,40 @@ def cmd_reactivation(client: GHLClient, args) -> None:
     print("  irrelevant and acting on it would be an opt-out violation.")
 
 
+def cmd_weekly(client: GHLClient, args) -> None:
+    rows = weekly.plan(client, args.event)
+    print(f"SEND PLAN for event {args.event!r}")
+    print("=" * 58)
+    print(f"  {'slot':<22}{'track':<8}{'recipients':>12}")
+    print("-" * 58)
+    for slot, track, n in rows:
+        label = {"A": "A reg", "B": "B unreg", "-": "post"}[track]
+        print(f"  {slot:<22}{label:<8}{n:>12,}" if n >= 0
+              else f"  {slot:<22}{label:<8}{'tag missing':>12}")
+    print("-" * 58)
+    if not args.out_dir:
+        print("  pass --out-dir to export one CSV per slot")
+        return
+
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    seen: dict[str, str] = {}
+    for slot, track, n in rows:
+        if n <= 0:
+            continue
+        builder = dict((s, b) for s, _, b in weekly.SLOTS)[slot]
+        filters = builder(args.event)
+        key = repr(filters)
+        # Several slots share an audience; export once and say so rather than
+        # writing byte-identical files under different names.
+        if key in seen:
+            print(f"  {slot:<22} same audience as {seen[key]}")
+            continue
+        seen[key] = slot
+        written = segments.export_csv(client, filters, out / f"{slot}.csv")
+        print(f"  wrote {written:>7,} to {slot}.csv")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -200,6 +234,12 @@ def main() -> int:
     sub.add_parser("schedules").set_defaults(func=cmd_schedules)
 
     sub.add_parser("audit").set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("weekly")
+    p.add_argument("--event", required=True,
+                   help="event tag prefix, e.g. \"7/24\" for '7/24 register'")
+    p.add_argument("--out-dir", help="directory to write one CSV per send slot")
+    p.set_defaults(func=cmd_weekly)
 
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")

@@ -87,6 +87,40 @@ The tag list is hand-curated in `ghl/sending.py` and does not update itself. A
 new suppression tag added in the GHL UI will not be honoured until it is added
 there.
 
+## Weekly webinar send plan
+
+```bash
+python3 cli.py weekly --event "7/24"
+python3 cli.py weekly --event "7/24" --out-dir lists/week-07-24
+```
+
+The webinar runs at a fixed time, so every send slot is knowable in advance and
+can be a scheduled broadcast. No workflow is required, which sidesteps the fact
+that the API cannot create workflows at all.
+
+Two tracks run in parallel all week, wanting opposite things:
+
+| Slot | Track | Audience |
+| --- | --- | --- |
+| mon-invite-1 | B | engaged list, minus registrants |
+| tue-invite-2 | B | engaged list, minus registrants |
+| wed-reminder-24h | A | registrants |
+| thu-reminder-1h | A | registrants |
+| thu-live-now | A | registrants |
+| thu-last-call | B | engaged list, minus registrants |
+| thu-replay | post | no-shows |
+| fri-replay-final | post | no-shows |
+| fri-attendee-next | post | attendees |
+
+Track A wants logistics and tolerates high frequency -- they asked to be there.
+Track B wants persuasion and must be mailed less often, with registrants removed
+from every send. The segments are mutually exclusive, so nobody receives both
+versions of the same message.
+
+Slots that share an audience are exported once rather than as byte-identical
+files. **Re-export Track B close to send time**: the export is a snapshot, and
+anyone who registers mid-week must drop out of the unregistered list.
+
 ## Reactivation
 
 ```bash
