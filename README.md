@@ -171,16 +171,19 @@ Verified live against the API on 2026-07-25:
 
 | | |
 | --- | --- |
-| Contacts | 48,977 |
-| Mailable (has email, DND off) | 43,682 |
+| Contacts | 48,978 |
+| Mailable (email present, both DND flags off) | 39,983 |
+| Sendable (mailable, minus suppression tags) | 28,856 |
+| Engaged (sendable, with an open or click) | 10,752 |
 | Tags | 544 |
 | Custom fields | 278 |
-| Workflows | 366 |
-| Email templates | 38 |
+| Custom values | 36 |
+| Workflows | 366 (342 draft, 24 published) |
 
-**5,295 contacts are not mailable** — 1,408 have no email address and 3,888
-have DND enabled (one contact is both). Any bulk send must exclude them, which
-is what `--mailable` does.
+**Every one of the 75 webinar-related workflows is in `draft`.** No reminder,
+no-show follow-up, or replay automation is running. Measured across 16 past
+events, the live show rate is 27.5% on 4,171 registrations, and 3,269 no-shows
+were recovered at 22.2% by replay.
 
 ## What the API can and cannot do
 
