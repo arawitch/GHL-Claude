@@ -72,8 +72,24 @@ def non_openers(event: str, open_tag: str, suffixes=None) -> list[dict]:
     )
 
 
-# Slot -> (track, segment builder). The send plan for one webinar week.
-SLOTS = [
+# WebinarJam sends its own registrant reminders at 48h, 24h, 1h and 15min, each
+# carrying that registrant's unique join link. Duplicating those in GHL would
+# double-message the people most likely to attend, and GHL cannot reproduce the
+# per-registrant link anyway. So the default plan cedes pre-event Track A to
+# WebinarJam and keeps only what WebinarJam does not do: persuading people who
+# have not registered, and everything after the event ends.
+SLOTS_WEBINARJAM = [
+    ("mon-invite-1",      "B", unregistered),
+    ("tue-invite-2",      "B", unregistered),
+    ("thu-last-call",     "B", unregistered),
+    ("thu-replay",        "-", no_shows),
+    ("fri-replay-final",  "-", no_shows),
+    ("fri-attendee-next", "-", attendees),
+]
+
+# Use this only if WebinarJam's reminders are disabled or land in spam. Verify
+# before switching: if both are live, registrants get two sets of reminders.
+SLOTS_GHL_REMINDERS = [
     ("mon-invite-1",      "B", unregistered),
     ("tue-invite-2",      "B", unregistered),
     ("wed-reminder-24h",  "A", registered),
@@ -85,11 +101,18 @@ SLOTS = [
     ("fri-attendee-next", "-", attendees),
 ]
 
+SLOTS = SLOTS_WEBINARJAM
 
-def plan(client: GHLClient, event: str, suffixes=None) -> list[tuple[str, str, int]]:
+
+def slots_for(reminders: str = "webinarjam"):
+    return SLOTS_GHL_REMINDERS if reminders == "ghl" else SLOTS_WEBINARJAM
+
+
+def plan(client: GHLClient, event: str, suffixes=None,
+         reminders: str = "webinarjam") -> list[tuple[str, str, int]]:
     """Return (slot, track, recipient count) for each send in the week."""
     out = []
-    for slot, track, builder in SLOTS:
+    for slot, track, builder in slots_for(reminders):
         try:
             n = client.count_contacts(builder(event, suffixes))
         except Exception:

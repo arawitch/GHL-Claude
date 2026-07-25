@@ -98,24 +98,28 @@ The webinar runs at a fixed time, so every send slot is knowable in advance and
 can be a scheduled broadcast. No workflow is required, which sidesteps the fact
 that the API cannot create workflows at all.
 
-Two tracks run in parallel all week, wanting opposite things:
+WebinarJam sends its own registrant reminders at 48h, 24h, 1h and 15min, each
+carrying that registrant's unique join link. Duplicating those in GHL would
+double-message the people most likely to attend, and GHL cannot reproduce the
+per-registrant link. So the default plan cedes pre-event Track A to WebinarJam:
 
-| Slot | Track | Audience |
-| --- | --- | --- |
-| mon-invite-1 | B | engaged list, minus registrants |
-| tue-invite-2 | B | engaged list, minus registrants |
-| wed-reminder-24h | A | registrants |
-| thu-reminder-1h | A | registrants |
-| thu-live-now | A | registrants |
-| thu-last-call | B | engaged list, minus registrants |
-| thu-replay | post | no-shows |
-| fri-replay-final | post | no-shows |
-| fri-attendee-next | post | attendees |
+| Slot | Track | Audience | Sent by |
+| --- | --- | --- | --- |
+| mon-invite-1 | B | engaged list, minus registrants | GHL |
+| tue-invite-2 | B | engaged list, minus registrants | GHL |
+| *48h / 24h / 1h / 15min* | A | registrants | **WebinarJam** |
+| thu-last-call | B | engaged list, minus registrants | GHL |
+| thu-replay | post | no-shows | GHL |
+| fri-replay-final | post | no-shows | GHL |
+| fri-attendee-next | post | attendees | GHL |
 
-Track A wants logistics and tolerates high frequency -- they asked to be there.
-Track B wants persuasion and must be mailed less often, with registrants removed
-from every send. The segments are mutually exclusive, so nobody receives both
-versions of the same message.
+GHL keeps exactly what WebinarJam does not do: persuading people who have not
+registered, and everything after the event ends. Pass `--reminders ghl` to add
+the registrant slots back, but only if WebinarJam's reminders are disabled or
+landing in spam -- with both live, registrants receive two sets.
+
+Track B wants persuasion rather than logistics and must have registrants removed
+from every send, so it never collides with what WebinarJam is sending.
 
 Slots that share an audience are exported once rather than as byte-identical
 files. **Re-export Track B close to send time**: the export is a snapshot, and

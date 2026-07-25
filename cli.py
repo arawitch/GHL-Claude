@@ -165,7 +165,7 @@ def cmd_reactivation(client: GHLClient, args) -> None:
 
 
 def cmd_weekly(client: GHLClient, args) -> None:
-    rows = weekly.plan(client, args.event)
+    rows = weekly.plan(client, args.event, reminders=args.reminders)
     print(f"SEND PLAN for event {args.event!r}")
     print("=" * 58)
     print(f"  {'slot':<22}{'track':<8}{'recipients':>12}")
@@ -185,7 +185,7 @@ def cmd_weekly(client: GHLClient, args) -> None:
     for slot, track, n in rows:
         if n <= 0:
             continue
-        builder = dict((s, b) for s, _, b in weekly.SLOTS)[slot]
+        builder = dict((s, b) for s, _, b in weekly.slots_for(args.reminders))[slot]
         filters = builder(args.event)
         key = repr(filters)
         # Several slots share an audience; export once and say so rather than
@@ -239,6 +239,9 @@ def main() -> int:
     p.add_argument("--event", required=True,
                    help="event tag prefix, e.g. \"7/24\" for '7/24 register'")
     p.add_argument("--out-dir", help="directory to write one CSV per send slot")
+    p.add_argument("--reminders", choices=["webinarjam", "ghl"], default="webinarjam",
+                   help="who sends registrant reminders. Default assumes WebinarJam "
+                        "handles 48h/24h/1h/15min, so GHL skips them.")
     p.set_defaults(func=cmd_weekly)
 
     p = sub.add_parser("reactivation")
