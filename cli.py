@@ -18,7 +18,7 @@ import argparse
 import sys
 
 from ghl.client import GHLClient, GHLError
-from ghl import segments
+from ghl import segments, sending
 
 
 def build_filters(args) -> list[dict]:
@@ -73,6 +73,42 @@ def cmd_schedules(client: GHLClient, args) -> None:
         print(f"{str(s.get('status','?')):<12} {str(s.get('name'))[:48]:<50} {s.get('subject','')}")
 
 
+def cmd_audit(client: GHLClient, args) -> None:
+    a = sending.audit(client)
+    total = a["total"]
+    print("SEND LIST FUNNEL")
+    print("=" * 58)
+    for key, label in [("total", "all contacts"),
+                       ("mailable", "has email, DND off"),
+                       ("safe_send", "minus suppression tags"),
+                       ("validated", "+ confirmed deliverable"),
+                       ("engaged", "+ has engagement tag")]:
+        print(f"  {label:<32}{a[key]:>8,}  {100 * a[key] / total:>5.1f}%")
+    print("=" * 58)
+    hidden = a["mailable"] - a["safe_send"]
+    print(f"  suppression removes {hidden:,} that a plain --mailable segment "
+          f"would have included\n")
+    print("SUPPRESSED CONTACTS BY TAG")
+    print("-" * 58)
+    for tag, n in sending.suppression_breakdown(client):
+        if n:
+            print(f"  {n:>7,}  {tag}")
+
+
+def cmd_sendlist(client: GHLClient, args) -> None:
+    tier = {"safe": sending.safe_send, "engaged": sending.engaged,
+            "validated": sending.validated}[args.tier]
+    extra = [segments.has_tag(t) for t in (args.tag or [])]
+    filters = tier(*extra)
+    total = client.count_contacts(filters)
+    if not args.out:
+        print(f"{total:,} contact(s) in the '{args.tier}' send list")
+        return
+    print(f"{total:,} contact(s); exporting to {args.out} ...", file=sys.stderr)
+    written = segments.export_csv(client, filters, args.out, max_records=args.limit)
+    print(f"wrote {written:,} row(s) to {args.out}")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -107,6 +143,17 @@ def main() -> int:
     p.set_defaults(func=cmd_workflows)
 
     sub.add_parser("schedules").set_defaults(func=cmd_schedules)
+
+    sub.add_parser("audit").set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("sendlist")
+    p.add_argument("--tier", choices=["safe", "engaged", "validated"], default="engaged",
+                   help="safe = minus suppression tags; engaged = also has an "
+                        "engagement tag (default); validated = also confirmed deliverable")
+    p.add_argument("--tag", action="append", help="additionally require this tag")
+    p.add_argument("--out", help="CSV output path; omit to just print the count")
+    p.add_argument("--limit", type=int)
+    p.set_defaults(func=cmd_sendlist)
 
     p = sub.add_parser("count"); add_filter_args(p); p.set_defaults(func=cmd_count)
 

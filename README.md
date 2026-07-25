@@ -34,8 +34,43 @@ python3 cli.py export --tag "weekly newsletter subscriber" --mailable \
                       --out lists/newsletter.csv
 ```
 
-`--tag` repeats to mean OR. `--mailable` is worth defaulting to for anything
-email-bound: it drops contacts with no email address and contacts with DND set.
+`--tag` repeats to mean OR. `--mailable` drops contacts with no email address
+and contacts with DND set — but see the warning below, it is **not** sufficient
+on its own for a send list.
+
+### Building a send list
+
+```bash
+python3 cli.py audit                      # funnel from 48,978 down to a safe list
+python3 cli.py sendlist --tier engaged    # count only
+python3 cli.py sendlist --tier engaged --out lists/send.csv
+python3 cli.py sendlist --tier safe --tag "weekly newsletter subscriber" --out lists/nl.csv
+```
+
+Three tiers, progressively more conservative:
+
+| Tier | Meaning | Size |
+| --- | --- | --- |
+| `safe` | mailable, minus every suppression tag | 33,609 |
+| `engaged` | `safe` + carries at least one engagement tag (default) | 12,771 |
+| `validated` | `safe` + address confirmed deliverable by a prior send | 1,046 |
+
+## ⚠️ DND is not the whole suppression story
+
+**10,074 contacts carry suppression *tags* that GHL's DND flag does not
+reflect**, so a segment built from `--mailable` alone includes all of them:
+
+| Count | Tag |
+| ---: | --- |
+| 8,396 | `do not email` |
+| 1,039 | `soft bounce` |
+| 654 | `complainer` |
+| 630 | `remove tag` |
+| 288 | `spamtrap` |
+
+`spamtrap` and `complainer` are the dangerous ones — mailing those is the
+fastest route to a blocklisting. Use `sendlist`, not `export --mailable`, for
+anything that will actually be sent.
 
 ## Account snapshot
 
