@@ -87,6 +87,41 @@ The tag list is hand-curated in `ghl/sending.py` and does not update itself. A
 new suppression tag added in the GHL UI will not be honoured until it is added
 there.
 
+## Reactivation
+
+```bash
+python3 cli.py reactivation                      # cohort counts
+python3 cli.py reactivation --out-dir lists/     # write both CSVs
+```
+
+Produces two files:
+
+- **`verify-candidates.csv`** (3,036 addresses) — suppressed by a *delivery
+  failure* with no opt-out of any kind on record. These are the only contacts it
+  is appropriate to send to a verification service.
+- **`NEVER-UPLOAD.csv`** (14,982 addresses) — consent withdrawn: global DND,
+  email-channel DND, or a `do not email` / `complainer` / `spamtrap` tag.
+
+The split matters because a hard bounce is a fact about the recipient's mailbox
+and survives a change of sending domain, whereas a reputation block is a fact
+about the sender and does not. The 2023-2025 failure rates (62-100%) are a
+reputation signature, so many of those "failures" were valid mailboxes refusing
+a poisoned sender.
+
+An opt-out is a third case and the strict one: consent withdrawal is permanent
+and domain-independent. A verifier will happily return "valid" for an address
+you are not permitted to mail, and that green tick is exactly how such an
+address finds its way back into a send.
+
+### Deduplication is by address, not contact id
+
+This location contains duplicate contact records for the same person. Ten
+addresses initially appeared on *both* lists: one record carried the opt-out
+while a duplicate did not, so the clean duplicate passed the candidate filter on
+its own merits. Consent attaches to the address, not the record, so the export
+filters `verify-candidates.csv` against every suppressed address before writing.
+The two files are verified to share zero addresses.
+
 ## Open question: `never send` vs `validEmail`
 
 Of the 3,570 contacts GHL has confirmed deliverable and that pass `MAILABLE`,

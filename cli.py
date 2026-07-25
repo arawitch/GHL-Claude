@@ -15,10 +15,12 @@ edits a contact, or enrolls anyone in a workflow.
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
+from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
-from ghl import segments, sending
+from ghl import segments, sending, reactivation
 
 
 def build_filters(args) -> list[dict]:
@@ -111,6 +113,57 @@ def cmd_sendlist(client: GHLClient, args) -> None:
     print(f"wrote {written:,} row(s) to {args.out}")
 
 
+def cmd_reactivation(client: GHLClient, args) -> None:
+    s = reactivation.summary(client)
+    print("REACTIVATION COHORTS")
+    print("=" * 60)
+    print(f"  never upload (consent withdrawn)     {s['never_upload']:>7,}")
+    print(f"  verification candidates              {s['verify_candidates']:>7,}")
+    print(f"    already recorded bad               {s['confirmed_bad']:>7,}")
+    print(f"    worth paying to verify             {s['worth_verifying']:>7,}")
+    print()
+    if not args.out_dir:
+        print("  pass --out-dir to export the lists")
+        return
+
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    verify_path = out / "verify-candidates.csv"
+    exclude_path = out / "NEVER-UPLOAD.csv"
+
+    print("  collecting opted-out addresses ...", file=sys.stderr)
+    suppressed = reactivation.suppressed_addresses(client)
+
+    # Duplicate contact records mean an address can pass verify_candidates()
+    # on one record while another record for the same person carries the
+    # opt-out. Filter by address, not by contact.
+    written = dropped = 0
+    with verify_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=segments.EXPORT_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for contact in client.search_contacts(filters=reactivation.worth_verifying()):
+            email = (contact.get("email") or "").strip().lower()
+            if not email or email in suppressed:
+                dropped += 1
+                continue
+            row = {k: contact.get(k, "") for k in segments.EXPORT_COLUMNS}
+            if isinstance(row.get("tags"), list):
+                row["tags"] = "|".join(row["tags"])
+            writer.writerow(row)
+            written += 1
+
+    print(f"  wrote {written:,} rows to {verify_path}")
+    if dropped:
+        print(f"    ({dropped:,} dropped: a duplicate record for the same address opted out)")
+    n = segments.export_csv(client, reactivation.never_upload(), exclude_path)
+    print(f"  wrote {n:,} rows to {exclude_path}")
+    print()
+    print("  Upload verify-candidates.csv to the verification service.")
+    print("  NEVER-UPLOAD.csv is a suppression reference for your own checking:")
+    print("  those contacts withdrew consent, so a 'valid' verdict on them is")
+    print("  irrelevant and acting on it would be an opt-out violation.")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -147,6 +200,10 @@ def main() -> int:
     sub.add_parser("schedules").set_defaults(func=cmd_schedules)
 
     sub.add_parser("audit").set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("reactivation")
+    p.add_argument("--out-dir", help="directory to write the two CSV lists into")
+    p.set_defaults(func=cmd_reactivation)
 
     p = sub.add_parser("sendlist")
     p.add_argument("--tier", choices=["safe", "engaged", "validated"], default="engaged",
