@@ -90,6 +90,24 @@ def suppressed_addresses(client: GHLClient) -> set[str]:
     }
 
 
+def never_reached() -> list[dict]:
+    """Contacts carrying no suppression and no engagement, and never delivered to.
+
+    These were acquired during 2023-2025 and mailed into a domain that was being
+    rejected at the gateway, so nothing arrived and no open was ever recorded.
+    "Unengaged" here is an artefact of the outage, not a statement about the
+    contact -- 97.8% have no delivery record of any kind.
+
+    Deliverability is the only thing verification settles. It says nothing about
+    whether someone still wants to hear from you after two years of silence, so
+    this pool needs a slow re-engagement ramp rather than admission to the
+    regular weekly send.
+    """
+    from .sending import ENGAGEMENT_TAGS, safe_send
+    no_engagement = [not_tagged(t) for t in ENGAGEMENT_TAGS]
+    return safe_send(*no_engagement)
+
+
 def summary(client: GHLClient) -> dict[str, int]:
     return {
         "never_upload": client.count_contacts(never_upload()),
