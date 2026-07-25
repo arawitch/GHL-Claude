@@ -1,0 +1,12 @@
+# Never commit credentials
+.env
+*.pit
+*token*
+
+# Exported lead lists contain personal data — keep them out of git
+lists/
+*.csv
+
+__pycache__/
+*.pyc
+.venv/
