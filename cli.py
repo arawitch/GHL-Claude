@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
-from ghl import segments, sending, reactivation, weekly
+from ghl import segments, sending, reactivation, weekly, rollout
 
 
 def build_filters(args) -> list[dict]:
@@ -198,6 +198,54 @@ def cmd_weekly(client: GHLClient, args) -> None:
         print(f"  wrote {written:>7,} to {slot}.csv")
 
 
+def cmd_rollout(client: GHLClient, args) -> None:
+    core_n = client.count_contacts(rollout.core())
+    rec_n = client.count_contacts(rollout.recovered())
+    total = core_n + rec_n
+    steps = rollout.schedule(args.start, total, args.growth)
+
+    print("VOLUME RAMP")
+    print("=" * 58)
+    print(f"  proven core (engaged)      {core_n:>8,}")
+    print(f"  recovered (never reached)  {rec_n:>8,}")
+    print(f"  full pool                  {total:>8,}")
+    print("-" * 58)
+    for i, v in enumerate(steps):
+        mark = "  <- this step" if i == args.step else ""
+        print(f"  step {i:<2} {v:>8,}{mark}")
+    print("-" * 58)
+    if args.step >= len(steps):
+        print(f"  step {args.step} is past the end; the ramp finishes at step {len(steps)-1}")
+        return
+
+    if not args.out:
+        print("  pass --out to export this step's recipients")
+        return
+
+    exclude = set()
+    if args.exclude_file:
+        with open(args.exclude_file, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                e = (row.get("email") or "").strip().lower()
+                if e:
+                    exclude.add(e)
+        print(f"  excluding {len(exclude):,} addresses from {args.exclude_file}")
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with out.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=segments.EXPORT_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for contact in rollout.step_list(client, steps[args.step], exclude):
+            row = {k: contact.get(k, "") for k in segments.EXPORT_COLUMNS}
+            if isinstance(row.get("tags"), list):
+                row["tags"] = "|".join(row["tags"])
+            w.writerow(row)
+            written += 1
+    print(f"  wrote {written:,} recipients to {out}")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -243,6 +291,14 @@ def main() -> int:
                    help="who sends registrant reminders. Default assumes WebinarJam "
                         "handles 48h/24h/1h/15min, so GHL skips them.")
     p.set_defaults(func=cmd_weekly)
+
+    p = sub.add_parser("rollout")
+    p.add_argument("--step", type=int, default=0, help="which step to export")
+    p.add_argument("--start", type=int, default=6795, help="current proven send volume")
+    p.add_argument("--growth", type=float, default=rollout.DEFAULT_GROWTH)
+    p.add_argument("--exclude-file", help="CSV of addresses to skip (verifier bad verdicts)")
+    p.add_argument("--out", help="CSV path for this step's recipients")
+    p.set_defaults(func=cmd_rollout)
 
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")

@@ -125,6 +125,26 @@ Slots that share an audience are exported once rather than as byte-identical
 files. **Re-export Track B close to send time**: the export is a snapshot, and
 anyone who registers mid-week must drop out of the unregistered list.
 
+## Volume ramp
+
+```bash
+python3 cli.py rollout --step 2
+python3 cli.py rollout --step 2 --out lists/step2.csv \
+                       --exclude-file lists/ACTION-hard-exclude.csv
+```
+
+Verification settled deliverability for 20,010 contacts but not whether people
+who have heard nothing since 2024 still want to hear from you. That is answered
+by complaint rate, and complaint rate rather than bounce rate is what damages a
+domain that has already been rebuilt once.
+
+So the recovered pool is added in steps of +25%. Each step holds the proven core
+constant and adds a bounded slice, newest first: the more recently someone opted
+in, the more likely they are to recognise the sender.
+
+Pass the verifier's bad verdicts via `--exclude-file` until they are tagged in
+GHL. No filter can see them before then.
+
 ## Reactivation
 
 ```bash
