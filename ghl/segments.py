@@ -35,7 +35,16 @@ def any_tag(tags: Iterable[str]) -> dict:
 
 
 def added_between(start: str, end: str) -> dict:
-    """Inclusive ISO date range, e.g. added_between("2026-01-01", "2026-06-30")."""
+    """Inclusive ISO date range, e.g. added_between("2026-01-01", "2026-06-30").
+
+    Both endpoints are whole days and both are included.
+
+    Timezone caveat, verified against the live API: the filter is evaluated in
+    the *location's* timezone (America/Los_Angeles), while the dateAdded field
+    is returned in UTC. A contact stamped 2026-07-25T06:03Z is 23:03 on
+    2026-07-24 locally and will NOT match a range starting 2026-07-25. Segment
+    by local dates, not by the UTC timestamps you see in exports.
+    """
     return {"field": "dateAdded", "operator": "range", "value": {"gte": start, "lte": end}}
 
 

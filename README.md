@@ -77,6 +77,10 @@ everything around them — deciding who belongs in one and enrolling them in bul
   The client retries it.
 - **Pagination uses the `searchAfter` cursor**, not offsets; offset paging is
   capped server-side and silently truncates results.
+- **Date filters run in the location's timezone, but `dateAdded` is returned in
+  UTC.** A contact stamped `2026-07-25T06:03Z` is 23:03 on 2026-07-24 in
+  America/Los_Angeles and will not match a range starting 2026-07-25. Segment by
+  local dates rather than by the UTC timestamps that appear in CSV exports.
 
 ## Layout
 
