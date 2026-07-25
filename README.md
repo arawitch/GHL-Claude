@@ -51,26 +51,50 @@ Three tiers, progressively more conservative:
 
 | Tier | Meaning | Size |
 | --- | --- | --- |
-| `safe` | mailable, minus every suppression tag | 33,609 |
-| `engaged` | `safe` + carries at least one engagement tag (default) | 12,771 |
-| `validated` | `safe` + address confirmed deliverable by a prior send | 1,046 |
+| `safe` | mailable, minus every suppression tag | 28,856 |
+| `engaged` | `safe` + carries at least one engagement tag (default) | 10,752 |
+| `validated` | `safe` + address confirmed deliverable by a prior send | 23 |
 
-## ⚠️ DND is not the whole suppression story
+`validated` is degenerate here and should not be used: 99% of contacts with
+`validEmail == true` also carry the `never send` tag, so intersecting the two
+leaves almost nothing. See the note at the end of this file.
 
-**10,074 contacts carry suppression *tags* that GHL's DND flag does not
-reflect**, so a segment built from `--mailable` alone includes all of them:
+## ⚠️ Two suppression traps
+
+**1. The global DND flag misses per-channel email DND.** GoHighLevel tracks DND
+per channel in `dndSettings`, where `status == "active"` means DND is ON for
+that channel. **3,700 contacts have `dndSettings.Email.status == "active"` while
+`dnd` is false** — email-suppressed without the global flag. `MAILABLE` now
+checks both; a filter on `dnd` alone would mail every one of them.
+
+**2. Suppression also lives in tags.** 11,127 contacts carry a suppression
+*tag* that no DND field reflects:
 
 | Count | Tag |
 | ---: | --- |
-| 8,396 | `do not email` |
-| 1,039 | `soft bounce` |
-| 654 | `complainer` |
-| 630 | `remove tag` |
-| 288 | `spamtrap` |
+| 7,426 | `never send` |
+| 7,421 | `do not email` |
+| 956 | `soft bounce` |
+| 591 | `remove tag` |
+| 539 | `complainer` |
+| 268 | `spamtrap` |
 
-`spamtrap` and `complainer` are the dangerous ones — mailing those is the
-fastest route to a blocklisting. Use `sendlist`, not `export --mailable`, for
-anything that will actually be sent.
+(Counts overlap; 11,127 is the de-duplicated total.) `spamtrap` and `complainer`
+are the dangerous ones — mailing those is the fastest route to a blocklisting.
+Use `sendlist`, not `export --mailable`, for anything that will actually be sent.
+
+The tag list is hand-curated in `ghl/sending.py` and does not update itself. A
+new suppression tag added in the GHL UI will not be honoured until it is added
+there.
+
+## Open question: `never send` vs `validEmail`
+
+Of the 3,570 contacts GHL has confirmed deliverable and that pass `MAILABLE`,
+**3,538 (99%) are tagged `never send`** and 2,558 (72%) are tagged
+`do not email`. Either the tag was applied more broadly than intended, or the
+validated pool is genuinely a historical list that was later suppressed
+wholesale. Worth confirming before treating `never send` as a permanent
+exclusion, since it is the single largest suppression set.
 
 ## Account snapshot
 

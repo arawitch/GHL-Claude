@@ -18,6 +18,7 @@ from .segments import MAILABLE, all_of, has_tag
 SUPPRESSION_TAGS = [
     "spamtrap",        # sending here is the fastest route to a blocklist
     "complainer",      # previously hit "report spam"
+    "never send",      # largest single suppression set in this location
     "do not email",    # explicit opt-out, not reflected in the DND flag
     "soft bounce",
     "remove tag",

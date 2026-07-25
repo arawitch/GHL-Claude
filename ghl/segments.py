@@ -15,9 +15,16 @@ from .client import GHLClient
 
 # Contacts that cannot legally or technically receive a marketing email.
 # Every email-bound segment should be intersected with this.
+#
+# The global `dnd` flag is not enough. GoHighLevel also tracks DND per channel
+# in dndSettings, where a status of "active" means DND is ON for that channel.
+# 3,700 contacts in this location have dndSettings.Email.status == "active"
+# while dnd is false -- email-suppressed without the global flag set. Checking
+# `dnd` alone would mail every one of them.
 MAILABLE = [
     {"field": "email", "operator": "exists"},
     {"field": "dnd", "operator": "eq", "value": False},
+    {"field": "dndSettings.Email.status", "operator": "not_eq", "value": "active"},
 ]
 
 EXPORT_COLUMNS = [

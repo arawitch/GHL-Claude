@@ -40,7 +40,9 @@ def cmd_info(client: GHLClient, args) -> None:
     print(f"timezone : {loc.get('timezone')}")
     print(f"contacts : {client.count_contacts():,}")
     print(f"mailable : {client.count_contacts(segments.all_of(segments.MAILABLE)):,}"
-          "   (has email, not DND)")
+          "   (has email, global DND off, email DND off)")
+    print(f"sendable : {client.count_contacts(sending.safe_send()):,}"
+          "   (mailable, minus suppression tags)")
     print(f"tags     : {len(client.tags()):,}")
     print(f"fields   : {len(client.custom_fields()):,} custom fields")
     print(f"workflows: {len(client.workflows()):,}")
