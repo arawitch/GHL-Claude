@@ -25,9 +25,32 @@ BURST_WINDOW_SECONDS = 10.0
 class GHLError(RuntimeError):
     """An API call failed in a way retrying will not fix."""
 
-    def __init__(self, status: int, method: str, path: str, body: str):
+    def __init__(self, status: int, method: str, path: str, body: str, hint: str = ""):
         self.status = status
-        super().__init__(f"{method} {path} -> HTTP {status}: {body[:500]}")
+        message = f"{method} {path} -> HTTP {status}: {body[:500]}"
+        if hint:
+            message += f"\n  {hint}"
+        super().__init__(message)
+
+
+class GHLScopeError(GHLError):
+    """The token is valid but was not issued with the scope this endpoint needs."""
+
+    def __init__(self, status: int, method: str, path: str, body: str):
+        super().__init__(status, method, path, body,
+                         hint="The token authenticated but lacks this endpoint's scope. "
+                              "Add it in GHL under Settings > Private Integrations and "
+                              "re-issue the token. Contact endpoints are unaffected.")
+
+
+# GoHighLevel answers 401 for two unrelated conditions, and only one of them is
+# permanent:
+#   * a token that is expired, wrong, or missing a scope -- retrying never helps
+#   * a query that ran too long, returned as 401 {"message":"Command timed out"}
+# The second is transient and succeeds on a retry, so the body decides how a 401
+# is handled, not the status code.
+TIMEOUT_401 = "command timed out"
+SCOPE_401 = "not authorized for this scope"
 
 
 class GHLClient:
@@ -86,16 +109,23 @@ class GHLClient:
                 delay *= 2
                 continue
 
-            # 429 and 5xx are transient; everything else is a real answer.
-            if resp.status_code == 429 or resp.status_code >= 500:
+            # 429, 5xx and a timed-out 401 are transient; everything else is a
+            # real answer.
+            body = resp.text
+            transient = (resp.status_code == 429 or resp.status_code >= 500
+                         or (resp.status_code == 401 and TIMEOUT_401 in body.lower()))
+            if transient:
                 if attempt == attempts:
-                    raise GHLError(resp.status_code, method, path, resp.text)
+                    raise GHLError(resp.status_code, method, path, body)
                 time.sleep(float(resp.headers.get("Retry-After", delay)))
                 delay *= 2
                 continue
 
+            if resp.status_code == 401 and SCOPE_401 in body.lower():
+                raise GHLScopeError(resp.status_code, method, path, body)
+
             if resp.status_code >= 400:
-                raise GHLError(resp.status_code, method, path, resp.text)
+                raise GHLError(resp.status_code, method, path, body)
 
             return resp.json() if resp.content else {}
 
