@@ -67,8 +67,27 @@ def validated(*extra: dict) -> list[dict]:
 
     validEmail is only populated once GHL has actually sent to an address, so
     this doubles as a "has send history" filter.
+
+    Unusable in this location as things stand -- see
+    validation_data_available(). Nothing here has validEmail == true, so this
+    returns an empty list rather than a conservative one.
     """
     return safe_send({"field": "validEmail", "operator": "eq", "value": True}, *extra)
+
+
+def validation_data_available(client: GHLClient) -> bool:
+    """Whether GHL has populated validEmail for this location at all.
+
+    Two things filter on validEmail -- the `validated` send tier and
+    reactivation's confirmed_bad cohort -- and both fail quietly when the field
+    is empty. `validated` returns no contacts and confirmed_bad excludes no
+    contacts, neither of which looks like an error: one reads as "no one
+    qualified", the other as "nothing to exclude". Verified live on 2026-07-26,
+    only 49 of 48,979 contacts carry validEmail at all and every one of them is
+    false, so both readings are wrong here.
+    """
+    return client.count_contacts(
+        all_of({"field": "validEmail", "operator": "eq", "value": True})) > 0
 
 
 def audit(client: GHLClient) -> dict[str, int]:

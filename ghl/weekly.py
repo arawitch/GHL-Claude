@@ -18,7 +18,7 @@ nobody receives both versions of the same message.
 
 from __future__ import annotations
 
-from .client import GHLClient
+from .client import GHLClient, GHLError
 from .segments import all_of, has_tag
 from .sending import engaged, not_tagged
 
@@ -109,13 +109,19 @@ def slots_for(reminders: str = "webinarjam"):
 
 
 def plan(client: GHLClient, event: str, suffixes=None,
-         reminders: str = "webinarjam") -> list[tuple[str, str, int]]:
-    """Return (slot, track, recipient count) for each send in the week."""
+         reminders: str = "webinarjam") -> list[tuple[str, str, int, str]]:
+    """Return (slot, track, recipient count, error) for each send in the week.
+
+    A slot whose tag does not exist counts 0 rather than failing, so an error
+    here is never "the tag is missing" -- it is the API refusing or failing the
+    query, and the affected slot would be skipped by an export. The reason is
+    carried back instead of being flattened into a sentinel, because a send plan
+    that quietly drops a slot is worse than one that fails loudly.
+    """
     out = []
     for slot, track, builder in slots_for(reminders):
         try:
-            n = client.count_contacts(builder(event, suffixes))
-        except Exception:
-            n = -1
-        out.append((slot, track, n))
+            out.append((slot, track, client.count_contacts(builder(event, suffixes)), ""))
+        except GHLError as exc:
+            out.append((slot, track, -1, str(exc).splitlines()[0]))
     return out

@@ -19,8 +19,22 @@ import csv
 import sys
 from pathlib import Path
 
-from ghl.client import GHLClient, GHLError
+from ghl.client import GHLClient, GHLError, GHLScopeError
 from ghl import segments, sending, reactivation, weekly, rollout
+
+
+def scoped(fn, fmt=lambda v: f"{v:,}"):
+    """Render a value from a scoped endpoint, or say why it is missing.
+
+    A private integration token can be issued with contact access but without
+    the locations, workflows or emails scopes. Those reads 401 while every
+    contact-driven command keeps working, so `info` reports what it can rather
+    than failing whole.
+    """
+    try:
+        return fmt(fn())
+    except GHLScopeError:
+        return "unavailable (token lacks this scope)"
 
 
 def build_filters(args) -> list[dict]:
@@ -37,17 +51,21 @@ def build_filters(args) -> list[dict]:
 
 
 def cmd_info(client: GHLClient, args) -> None:
-    loc = client.location()
-    print(f"location : {loc.get('name')}  ({loc.get('id')})")
-    print(f"timezone : {loc.get('timezone')}")
+    try:
+        loc = client.location()
+        print(f"location : {loc.get('name')}  ({loc.get('id')})")
+        print(f"timezone : {loc.get('timezone')}")
+    except GHLScopeError:
+        print(f"location : {client.location_id}")
+        print("timezone : unavailable (token lacks the locations scope)")
     print(f"contacts : {client.count_contacts():,}")
     print(f"mailable : {client.count_contacts(segments.all_of(segments.MAILABLE)):,}"
           "   (has email, global DND off, email DND off)")
     print(f"sendable : {client.count_contacts(sending.safe_send()):,}"
           "   (mailable, minus suppression tags)")
-    print(f"tags     : {len(client.tags()):,}")
-    print(f"fields   : {len(client.custom_fields()):,} custom fields")
-    print(f"workflows: {len(client.workflows()):,}")
+    print(f"tags     : {scoped(lambda: len(client.tags()))}")
+    print(f"fields   : {scoped(lambda: len(client.custom_fields()))} custom fields")
+    print(f"workflows: {scoped(lambda: len(client.workflows()))}")
 
 
 def cmd_tags(client: GHLClient, args) -> None:
@@ -84,10 +102,19 @@ def cmd_audit(client: GHLClient, args) -> None:
     print("=" * 58)
     for key, label in [("total", "all contacts"),
                        ("mailable", "has email, DND off"),
-                       ("safe_send", "minus suppression tags"),
-                       ("validated", "+ confirmed deliverable"),
-                       ("engaged", "+ has engagement tag")]:
+                       ("safe_send", "minus suppression tags")]:
         print(f"  {label:<32}{a[key]:>8,}  {100 * a[key] / total:>5.1f}%")
+    print("-" * 58)
+    # engaged and validated are two independent narrowings of safe_send, not
+    # further steps below it. Listing them in one column made the funnel look
+    # cumulative, which understates the safe list by an order of magnitude.
+    print("  narrowings of the safe list:")
+    for key, label in [("engaged", "+ has engagement tag"),
+                       ("validated", "+ confirmed deliverable")]:
+        note = ""
+        if key == "validated" and not a[key]:
+            note = "  <- no validEmail data in this location"
+        print(f"  {label:<32}{a[key]:>8,}  {100 * a[key] / total:>5.1f}%{note}")
     print("=" * 58)
     hidden = a["mailable"] - a["safe_send"]
     print(f"  suppression removes {hidden:,} that a plain --mailable segment "
@@ -99,7 +126,17 @@ def cmd_audit(client: GHLClient, args) -> None:
             print(f"  {n:>7,}  {tag}")
 
 
-def cmd_sendlist(client: GHLClient, args) -> None:
+def cmd_sendlist(client: GHLClient, args) -> int | None:
+    if args.tier == "validated" and not sending.validation_data_available(client):
+        # Refuse rather than export an empty file. A zero-row send list reads as
+        # "nobody qualified" when the truth is that the field it filters on has
+        # no data, and the two call for opposite responses.
+        print("error: --tier validated filters on validEmail, and no contact in this\n"
+              "       location has validEmail == true, so the tier matches nothing.\n"
+              "       GHL sets validEmail only after it has sent to an address; that\n"
+              "       history is absent here. Use --tier engaged, or --tier safe.",
+              file=sys.stderr)
+        return 1
     tier = {"safe": sending.safe_send, "engaged": sending.engaged,
             "validated": sending.validated}[args.tier]
     extra = [segments.has_tag(t) for t in (args.tag or [])]
@@ -121,6 +158,12 @@ def cmd_reactivation(client: GHLClient, args) -> None:
     print(f"  verification candidates              {s['verify_candidates']:>7,}")
     print(f"    already recorded bad               {s['confirmed_bad']:>7,}")
     print(f"    worth paying to verify             {s['worth_verifying']:>7,}")
+    if not sending.validation_data_available(client):
+        print()
+        print("  note: 'already recorded bad' comes from validEmail, which is not")
+        print("        populated in this location. A near-zero figure here means GHL")
+        print("        has no delivery history to answer with, not that the candidate")
+        print("        list is clean -- expect the verifier to find bad addresses.")
     print()
     if not args.out_dir:
         print("  pass --out-dir to export the lists")
@@ -163,17 +206,25 @@ def cmd_reactivation(client: GHLClient, args) -> None:
     print("  irrelevant and acting on it would be an opt-out violation.")
 
 
-def cmd_weekly(client: GHLClient, args) -> None:
+def cmd_weekly(client: GHLClient, args) -> int | None:
     rows = weekly.plan(client, args.event, reminders=args.reminders)
     print(f"SEND PLAN for event {args.event!r}")
     print("=" * 58)
     print(f"  {'slot':<22}{'track':<8}{'recipients':>12}")
     print("-" * 58)
-    for slot, track, n in rows:
+    failed = False
+    for slot, track, n, err in rows:
         label = {"A": "A reg", "B": "B unreg", "-": "post"}[track]
-        print(f"  {slot:<22}{label:<8}{n:>12,}" if n >= 0
-              else f"  {slot:<22}{label:<8}{'tag missing':>12}")
+        if n >= 0:
+            print(f"  {slot:<22}{label:<8}{n:>12,}")
+        else:
+            failed = True
+            print(f"  {slot:<22}{label:<8}{'FAILED':>12}   {err}")
     print("-" * 58)
+    if failed:
+        print("  a slot failed to count and would be skipped by an export; fix that")
+        print("  before relying on this plan\n")
+        return 1
     if not args.out_dir:
         print("  pass --out-dir to export one CSV per slot")
         return
@@ -181,7 +232,7 @@ def cmd_weekly(client: GHLClient, args) -> None:
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     seen: dict[str, str] = {}
-    for slot, track, n in rows:
+    for slot, track, n, _err in rows:
         if n <= 0:
             continue
         builder = dict((s, b) for s, _, b in weekly.slots_for(args.reminders))[slot]
@@ -321,13 +372,12 @@ def main() -> int:
 
     args = parser.parse_args()
     try:
-        args.func(GHLClient(), args)
+        return args.func(GHLClient(), args) or 0
     except GHLError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
-    return 0
 
 
 if __name__ == "__main__":
