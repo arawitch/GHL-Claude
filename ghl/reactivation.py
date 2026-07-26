@@ -16,11 +16,16 @@ not permitted to mail, and that green tick is how they end up back in a send.
 from __future__ import annotations
 
 from .client import GHLClient
-from .segments import all_of, has_tag
+from .segments import EMAIL_DND_ON_STATUSES, all_of, has_tag
 from .sending import not_tagged
 
-EMAIL_DND_ON = {"field": "dndSettings.Email.status", "operator": "eq", "value": "active"}
-EMAIL_DND_OFF = {"field": "dndSettings.Email.status", "operator": "not_eq", "value": "active"}
+# Every per-channel status that means "email DND is on", not just "active".
+# See segments.EMAIL_DND_ON_STATUSES for why the list is shared and why the off
+# case is expressed as not_eq rather than eq "inactive".
+EMAIL_DND_ON = [{"field": "dndSettings.Email.status", "operator": "eq", "value": s}
+                for s in EMAIL_DND_ON_STATUSES]
+EMAIL_DND_OFF = [{"field": "dndSettings.Email.status", "operator": "not_eq", "value": s}
+                 for s in EMAIL_DND_ON_STATUSES]
 HAS_EMAIL = {"field": "email", "operator": "exists"}
 
 # Consent withdrawn or reputation-toxic. Never upload, never mail, no exceptions.
@@ -37,7 +42,7 @@ def never_upload() -> list[dict]:
     carry an explicit opt-out / abuse tag.
     """
     return [{"group": "OR", "filters": [
-        EMAIL_DND_ON,
+        *EMAIL_DND_ON,
         {"field": "dnd", "operator": "eq", "value": True},
         *[has_tag(t) for t in NEVER_UPLOAD_TAGS],
     ]}]
@@ -63,13 +68,24 @@ def confirmed_bad() -> list[dict]:
 
     Worth excluding from a paid verification run: you would be paying to be
     told what you already know.
+
+    Only as good as validEmail, which is barely populated in this location --
+    49 contacts carry it at all and none are true. So this cohort currently
+    resolves to 3 contacts and removes almost nothing. Check
+    sending.validation_data_available() before treating a small number here as
+    "the list is already clean" rather than "GHL has no data to answer with".
     """
     return all_of(*verify_candidates(),
                   {"field": "validEmail", "operator": "eq", "value": False})
 
 
 def worth_verifying() -> list[dict]:
-    """verify_candidates() minus addresses already known bad."""
+    """verify_candidates() minus addresses already known bad.
+
+    With validEmail unpopulated this is all but identical to
+    verify_candidates(); the subtraction is a safeguard for when GHL does have
+    delivery data, not an active filter today.
+    """
     return all_of(*verify_candidates(),
                   {"field": "validEmail", "operator": "not_eq", "value": False})
 
