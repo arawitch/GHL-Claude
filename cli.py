@@ -147,8 +147,7 @@ def cmd_reactivation(client: GHLClient, args) -> None:
                 dropped += 1
                 continue
             row = {k: contact.get(k, "") for k in segments.EXPORT_COLUMNS}
-            if isinstance(row.get("tags"), list):
-                row["tags"] = "|".join(row["tags"])
+            row["tags_REFERENCE_DO_NOT_IMPORT"] = " / ".join(contact.get("tags") or [])
             writer.writerow(row)
             written += 1
 
@@ -239,8 +238,7 @@ def cmd_rollout(client: GHLClient, args) -> None:
         w.writeheader()
         for contact in rollout.step_list(client, steps[args.step], exclude):
             row = {k: contact.get(k, "") for k in segments.EXPORT_COLUMNS}
-            if isinstance(row.get("tags"), list):
-                row["tags"] = "|".join(row["tags"])
+            row["tags_REFERENCE_DO_NOT_IMPORT"] = " / ".join(contact.get("tags") or [])
             w.writerow(row)
             written += 1
     print(f"  wrote {written:,} recipients to {out}")

@@ -27,9 +27,14 @@ MAILABLE = [
     {"field": "dndSettings.Email.status", "operator": "not_eq", "value": "active"},
 ]
 
+# The tag column is named so GoHighLevel's importer will not auto-map it onto
+# the Tags field. An earlier export used a plain "tags" header holding
+# pipe-joined values; re-importing that file made GHL read each whole string as
+# one tag name and created 6,638 junk tags in a single pass. The separator is
+# " / " rather than "|" for the same reason.
 EXPORT_COLUMNS = [
     "id", "firstName", "lastName", "email", "phone",
-    "tags", "source", "dateAdded", "dateUpdated", "country", "city",
+    "tags_REFERENCE_DO_NOT_IMPORT", "source", "dateAdded", "dateUpdated", "country", "city",
 ]
 
 
@@ -101,8 +106,7 @@ def export_csv(client: GHLClient, filters: list[dict], out_path: str | Path,
         writer.writeheader()
         for contact in client.search_contacts(filters=filters, max_records=max_records):
             row = {k: contact.get(k, "") for k in EXPORT_COLUMNS}
-            if isinstance(row.get("tags"), list):
-                row["tags"] = "|".join(row["tags"])
+            row["tags_REFERENCE_DO_NOT_IMPORT"] = " / ".join(contact.get("tags") or [])
             writer.writerow(row)
             written += 1
     return written
