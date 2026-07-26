@@ -18,7 +18,7 @@ from .segments import MAILABLE, all_of, has_tag
 SUPPRESSION_TAGS = [
     "spamtrap",        # sending here is the fastest route to a blocklist
     "complainer",      # previously hit "report spam"
-    "never send",      # largest single suppression set in this location
+    "never send",      # largest single suppression set in UOO
     "do not email",    # explicit opt-out, not reflected in the DND flag
     "soft bounce",
     "remove tag",
@@ -68,9 +68,9 @@ def validated(*extra: dict) -> list[dict]:
     validEmail is only populated once GHL has actually sent to an address, so
     this doubles as a "has send history" filter.
 
-    Unusable in this location as things stand -- see
-    validation_data_available(). Nothing here has validEmail == true, so this
-    returns an empty list rather than a conservative one.
+    Check validation_data_available() before using this: where GHL has not
+    populated validEmail, this returns an empty list rather than a conservative
+    one, which does not look like a failure.
     """
     return safe_send({"field": "validEmail", "operator": "eq", "value": True}, *extra)
 
@@ -82,9 +82,12 @@ def validation_data_available(client: GHLClient) -> bool:
     reactivation's confirmed_bad cohort -- and both fail quietly when the field
     is empty. `validated` returns no contacts and confirmed_bad excludes no
     contacts, neither of which looks like an error: one reads as "no one
-    qualified", the other as "nothing to exclude". Verified live on 2026-07-26,
-    only 49 of 48,979 contacts carry validEmail at all and every one of them is
-    false, so both readings are wrong here.
+    qualified", the other as "nothing to exclude".
+
+    Not hypothetical -- sub-account U23Jnu7rscfzAOUmSevW has no contact with
+    validEmail == true at all, so both readings are wrong there. Checked at
+    runtime rather than hardcoded, since whether GHL has populated the field is
+    a property of the location the token happens to point at.
     """
     return client.count_contacts(
         all_of({"field": "validEmail", "operator": "eq", "value": True})) > 0

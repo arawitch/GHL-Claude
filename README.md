@@ -20,6 +20,27 @@ python3 cli.py info
 python3 tests.py    # offline, no network, no pytest
 ```
 
+### ⚠️ The configured location is not the one this work documents
+
+`GHL_LOCATION_ID` is currently **`U23Jnu7rscfzAOUmSevW`**. Every prior session,
+the handoff sheet and the figures below were produced against **University Of
+Options — `IyorbIIbJLsMLaqy8j1P`**. These are different GoHighLevel
+sub-accounts, and the current token cannot reach the second one at all:
+
+```
+POST /contacts/search  locationId=IyorbIIbJLsMLaqy8j1P
+  -> 403 {"message":"The token does not have access to this location"}
+```
+
+They are easy to mistake for one another — both hold roughly 48,978 contacts and
+share tag names like `never send`, `do not email` and `spamtrap` — but none of
+the tags this project created exist in the configured one. `current email list`,
+`email batch 1`–`5` and `verified bad` are all absent, so the ZeroBounce
+verification and the volume-ramp tagging are not present there.
+
+**Any figure measured in this environment describes `U23Jnu7rscfzAOUmSevW`, not
+the account the send plan is for.** Fix the credentials before acting on a count.
+
 ### Token scopes
 
 A private integration token is issued with a chosen set of scopes, and the
@@ -56,7 +77,7 @@ on its own for a send list.
 ### Building a send list
 
 ```bash
-python3 cli.py audit                      # funnel from 48,979 down to a safe list
+python3 cli.py audit                      # funnel from all contacts to a safe list
 python3 cli.py sendlist --tier engaged    # count only
 python3 cli.py sendlist --tier engaged --out lists/send.csv
 python3 cli.py sendlist --tier safe --tag "weekly newsletter subscriber" --out lists/nl.csv
@@ -65,18 +86,21 @@ python3 cli.py sendlist --tier safe --tag "weekly newsletter subscriber" --out l
 Three tiers. `safe` and `engaged` are both narrowings of the mailable pool, and
 `engaged` is the default:
 
-| Tier | Meaning | Size |
-| --- | --- | --- |
-| `safe` | mailable, minus every suppression tag | 34,621 |
-| `engaged` | `safe` + carries at least one engagement tag (default) | 10,505 |
-| `validated` | `safe` + address confirmed deliverable by a prior send | **0 — refuses to run** |
+| Tier | Meaning | UOO | configured acct |
+| --- | --- | ---: | ---: |
+| `safe` | mailable, minus every suppression tag | 28,856 | 34,621 |
+| `engaged` | `safe` + carries at least one engagement tag (default) | 10,752 | 10,505 |
+| `validated` | `safe` + address confirmed deliverable by a prior send | 23 | 0 |
 
-`validated` is not usable in this location. **No contact has
-`validEmail == true`** — the field is set only after GHL has itself sent to an
-address, and that history is absent here. The tier therefore matched nothing
-while looking like a successful, unusually cautious result, so
-`sendlist --tier validated` now refuses and exits non-zero instead of writing a
-header-only CSV.
+`validated` is not usable in either account, for different reasons. In UOO it is
+degenerate — 99% of contacts with `validEmail == true` also carry `never send`,
+so intersecting them leaves 23. In the configured account **no contact has
+`validEmail == true` at all**, so it matches nothing while looking like a
+successful, unusually cautious result.
+
+`sendlist --tier validated` therefore checks first and refuses when the field is
+unpopulated, exiting non-zero rather than writing a header-only CSV. That guard
+is about the field being absent, not about which account is configured.
 
 Note that `engaged` and `validated` are alternative narrowings of `safe`, not
 successive ones. `audit` used to print all five figures in a single column,
@@ -91,33 +115,38 @@ contact can be email-suppressed there while `dnd` is false, and a filter on
 `dnd` alone would mail every one of them. `MAILABLE` checks both.
 
 **2. Per-channel DND is not a boolean, and `"active"` is not the only "on".**
-Statuses observed live in this location are `inactive` (off), `active` (on) and
-`permanent` (on, set by a hard opt-out such as an SMS STOP keyword). The Email
-channel currently uses only `active`/`inactive`, but SMS and RCS both carry
-`permanent` here, so Email can acquire it. `MAILABLE` excludes both on-statuses.
+Statuses observed are `inactive` (off), `active` (on) and `permanent` (on, set
+by a hard opt-out such as an SMS STOP keyword). Email was seen using only
+`active`/`inactive`, but SMS and RCS both carry `permanent`, so Email can
+acquire it. `MAILABLE` excludes both on-statuses. This is defensive rather than
+load-bearing today — it costs nothing and closes the gap wherever it appears.
 
-Exclusion is written as `not_eq`, never as `eq "inactive"`, and that detail is
+Exclusion is written as `not_eq`, never as `eq "inactive"`, and that detail *is*
 load-bearing. **Verified live: `eq` on a status value the location does not
-currently use matches every contact rather than none.** `Email.status == "inactive"`
-returns all 48,979 records, as do `"temporary"` and `"pending"`. A guard phrased
-as a positive assertion would therefore stop filtering silently. `not_eq` is
-exact — `eq("active")` and `not_eq("active")` sum to the full contact count.
+currently use matches every contact rather than none** — `Email.status ==
+"inactive"` returned the entire contact list, as did `"temporary"` and
+`"pending"`. A guard phrased as a positive assertion would stop filtering
+silently. `not_eq` is exact: `eq("active")` and `not_eq("active")` sum to the
+full contact count.
 
-**3. Suppression also lives in tags.** Contacts carrying a suppression *tag*
-that no DND field reflects, counted within the mailable pool:
+(Both observations come from `U23Jnu7rscfzAOUmSevW`. They are statements about
+how the GHL API treats these operators, which is not location-specific, but the
+per-channel status *values* in UOO have not been re-checked.)
+
+**3. Suppression also lives in tags.** In UOO, 11,127 contacts carry a
+suppression *tag* that no DND field reflects:
 
 | Count | Tag |
 | ---: | --- |
-| 8,749 | `do not email` |
-| 8,102 | `never send` |
-| 1,044 | `soft bounce` |
-| 781 | `complainer` |
-| 636 | `remove tag` |
-| 303 | `spamtrap` |
-| 211 | `remove from bootcamp` |
+| 7,426 | `never send` |
+| 7,421 | `do not email` |
+| 956 | `soft bounce` |
+| 591 | `remove tag` |
+| 539 | `complainer` |
+| 268 | `spamtrap` |
 
-(Counts overlap heavily; removing all eleven suppression tags drops the mailable
-pool by 12,641.) `spamtrap` and `complainer` are the dangerous ones — mailing
+(Counts overlap; 11,127 is the de-duplicated total.) `spamtrap` and `complainer`
+are the dangerous ones — mailing
 those is the fastest route to a blocklisting. Use `sendlist`, not
 `export --mailable`, for anything that will actually be sent.
 
@@ -185,11 +214,12 @@ So the recovered pool is added in steps of +25%. Each step holds the proven core
 constant and adds a bounded slice, newest first: the more recently someone opted
 in, the more likely they are to recognise the sender.
 
-The two pools as measured on 2026-07-26: **10,505** proven core (engaged) plus
-**24,116** recovered, for a full pool of **34,621**. The recovered side is more
-than twice the size it was, which is the drift flagged in *Account snapshot*
-arriving in the ramp — a bigger pool here means more steps, not bigger ones, so
-the ramp itself stays safe as long as `--start` still reflects real send volume.
+The pools have not been measured in UOO since the ramp was written. In the
+configured account they are 10,505 core plus 24,116 recovered, but that is a
+different sub-account and should not be used to size a UOO send.
+
+A larger recovered pool means more steps, not bigger ones, so the ramp stays
+safe either way as long as `--start` reflects real proven send volume.
 
 Pass the verifier's bad verdicts via `--exclude-file` until they are tagged in
 GHL. No filter can see them before then.
@@ -203,17 +233,15 @@ python3 cli.py reactivation --out-dir lists/     # write both CSVs
 
 Produces two files:
 
-- **`verify-candidates.csv`** (3,179 addresses) — suppressed by a *delivery
-  failure* with no opt-out of any kind on record. These are the only contacts it
-  is appropriate to send to a verification service.
-- **`NEVER-UPLOAD.csv`** (8,981 addresses) — consent withdrawn: global DND,
-  email-channel DND at any on-status, or a `do not email` / `complainer` /
+- **`verify-candidates.csv`** (3,036 addresses in UOO) — suppressed by a
+  *delivery failure* with no opt-out of any kind on record. These are the only
+  contacts it is appropriate to send to a verification service.
+- **`NEVER-UPLOAD.csv`** (14,982 addresses in UOO) — consent withdrawn: global
+  DND, email-channel DND at any on-status, or a `do not email` / `complainer` /
   `spamtrap` tag.
 
-The never-upload figure fell from 14,982 to 8,981 between snapshots. That is the
-same email-channel DND drop flagged under *Unexplained drift* above, seen from
-the other side: contacts leaving the DND set leave this list too. Re-read that
-section before treating the smaller exclusion list as good news.
+Run against the configured account these come out at 3,179 and 8,981, which is
+a different sub-account rather than a change in UOO.
 
 The split matters because a hard bounce is a fact about the recipient's mailbox
 and survives a change of sending domain, whereas a reputation block is a fact
@@ -235,93 +263,73 @@ its own merits. Consent attaches to the address, not the record, so the export
 filters `verify-candidates.csv` against every suppressed address before writing.
 The two files are verified to share zero addresses.
 
-## Resolved: `never send` vs `validEmail`
+## Still open: `never send` vs `validEmail`
 
-The previous snapshot recorded 3,570 contacts with `validEmail == true`, of
-which 99% were tagged `never send`, and asked whether the tag had been applied
-too broadly. **The question cannot be answered from `validEmail`, because that
-field is now empty.** Live on 2026-07-26: 0 contacts have `validEmail == true`,
-49 have it `false`, and the other 48,930 have no value at all. There is no
-validated pool left to intersect with anything.
+Of the 3,570 UOO contacts GHL had confirmed deliverable and that pass `MAILABLE`,
+**3,538 (99%) are tagged `never send`** and 2,558 (72%) are tagged
+`do not email`. Either the tag was applied more broadly than intended, or the
+validated pool is genuinely a historical list that was later suppressed
+wholesale. Worth confirming before treating `never send` as a permanent
+exclusion, since it is the single largest suppression set.
 
-Two consequences, both handled in code:
+**This has not been resolved.** An attempt to settle it on 2026-07-26 measured
+the wrong sub-account — `U23Jnu7rscfzAOUmSevW`, where `validEmail` is empty and
+the tag overlap is different — so those findings say nothing about UOO and have
+been removed. Re-running it needs a token with access to `IyorbIIbJLsMLaqy8j1P`.
 
-- the `validated` send tier matches nothing and now refuses to run
-- `reactivation`'s "already recorded bad" cohort is down to **3 contacts**, so
-  it no longer removes anything meaningful from a paid verification run. A
-  near-zero figure there means GHL has no delivery history to answer with, not
-  that the candidate list is clean. `reactivation` prints that caveat when it
-  detects the field is unpopulated.
+The question to answer there is not really about `validEmail`, which only records
+whether GHL has delivered to an address before. It is how much of `never send`
+is *not* already covered by `do not email`: the contacts carrying `never send`
+alone, otherwise sendable, and especially any among them with engagement tags.
+A suppression tag sitting on people who were demonstrably opening and clicking
+is the case that most needs a human to confirm what the tag meant.
 
-### What the tag overlap actually shows
-
-Measured directly instead, `never send` is *not* redundant with `do not email`:
-
-| | Count |
-| --- | ---: |
-| `never send` | 8,176 |
-| `do not email` | 8,766 |
-| both | 5,829 |
-| `never send` only | 2,347 |
-| `do not email` only | 2,937 |
-
-Of the 2,347 suppressed by `never send` alone, 2,144 are otherwise mailable and
-carry no other suppression tag — and **936 of those carry an engagement tag**,
-meaning they have opened or clicked something. That is the population dropping
-`never send` would release, and the engagement share is the reason not to drop
-it casually: a tag applied to people who were demonstrably interacting is more
-likely deliberate than accidental.
-
-This is now a business question rather than a data one, and the data cannot
-settle it: whoever applied `never send` knows what it meant. Until that is
-established it stays in `SUPPRESSION_TAGS`, which is the conservative default —
-the cost of keeping it is 2,144 unmailed contacts, and the cost of removing it
-wrongly is mailing people who asked not to be mailed.
+Until then `never send` stays in `SUPPRESSION_TAGS`. That is the conservative
+default: the cost of keeping it wrongly is unmailed contacts, and the cost of
+dropping it wrongly is mailing people who asked not to be mailed.
 
 ## Account snapshot
 
-Verified live against the API on 2026-07-26. The 2026-07-25 column is the
-previous snapshot, kept because some of the movement needs explaining:
+Two different sub-accounts, kept side by side because it is otherwise very easy
+to read a number from the wrong one. The left column is the account this project
+is for; the right is the one the current credentials actually reach.
 
-| | 2026-07-25 | 2026-07-26 |
+| | UOO `IyorbIIbJLsMLaqy8j1P` (2026-07-25) | configured `U23Jnu…` (2026-07-26) |
 | --- | ---: | ---: |
-| Contacts | 48,978 | 48,979 |
+| Contacts | 48,978 | 48,980 |
 | Has an email address | — | 47,494 |
-| Mailable (email present, both DND flags off) | 39,983 | **47,262** |
+| Mailable (email present, both DND flags off) | 39,983 | 47,262 |
 | Sendable (mailable, minus suppression tags) | 28,856 | 34,621 |
 | Engaged (sendable, with an open or click) | 10,752 | 10,505 |
 | Recovered (sendable, no engagement tag) | — | 24,116 |
 | Global `dnd == true` | — | 148 |
-| Email-channel DND on | 3,700 | **227** (84 with `dnd` false) |
-| `validEmail == true` | 3,570 | **0** |
+| Email-channel DND on | 3,700 | 227 (84 with `dnd` false) |
+| `validEmail == true` | 3,570 | 0 |
 | Tags | 544 | 561 |
 | Custom fields | 278 | 226 |
 | Workflows | 366 (342 draft, 24 published) | token lacks the scope |
 
-Workflow figures could not be re-verified — that endpoint is out of scope for
-the current token. Across 16 past events the live show rate was 27.5% on 4,171
-registrations, and 3,269 no-shows were recovered at 22.2% by replay.
+**The two columns are not a before and after.** They are separate
+sub-accounts measured a day apart, and nothing in the right-hand column says
+anything about the left. The UOO figures have not been re-verified since
+2026-07-25, because the current token cannot reach that location.
 
-### ⚠️ Unexplained drift — worth checking in the GHL UI
+Across 16 past events the live show rate was 27.5% on 4,171 registrations, and
+3,269 no-shows were recovered at 22.2% by replay. **Every one of the 75
+webinar-related workflows is in `draft`** — no reminder, no-show follow-up or
+replay automation is running.
 
-Contact count moved by one, but three suppression-relevant figures moved a long
-way in a single day, all in the direction of *more* contacts being mailable:
+### Note on a retracted warning
 
-- **email-channel DND fell from 3,700 to 227.** If the earlier figure was
-  correct, roughly 3,500 contacts who were email-suppressed no longer are.
-  Those are unsubscribes, and they are now inside the mailable pool.
-- **`validEmail` went from 3,570 true to none at all.**
-- **custom fields fell from 278 to 226.**
+An earlier revision of this file read the two columns as one account changing
+overnight and flagged it as lost consent — roughly 3,500 unsubscribes apparently
+re-entering the mailable pool. **That was wrong**, and the tell was available at
+the time: the contact counts match to within two, which is a coincidence no bulk
+edit produces. The two locations are near-copies of each other, so a same-day
+comparison looked like drift.
 
-This tooling only reads, so it did not cause any of it, and it cannot see
-history to prove what happened — a bulk edit, an import, a field reset and an
-inaccurate earlier snapshot are all consistent with what is visible now. It
-matters because the mailable pool grew by 7,279 without anyone opting in.
-
-**Do not treat the growth in `sendable` as new reach until this is explained.**
-Tag-based suppression is unaffected and still removes 12,641 contacts, so
-`sendlist` remains the safe path; the risk is specifically that DND-based
-consent signals were lost. Check the location's audit log before the next send.
+Worth keeping in mind whenever a figure here moves unexpectedly: check which
+`GHL_LOCATION_ID` produced it before concluding the account changed.
 
 ## What the API can and cannot do
 

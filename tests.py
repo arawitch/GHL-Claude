@@ -102,7 +102,8 @@ def test_email_dnd_covers_every_on_status() -> None:
     # Asserted literally rather than against EMAIL_DND_ON_STATUSES: MAILABLE is
     # generated from that constant, so comparing the two only proves the loop
     # ran. These are the values observed live -- "active" on the Email channel,
-    # "permanent" on SMS and RCS and therefore possible on Email.
+    # "permanent" on SMS and RCS and therefore possible on Email. Add to this
+    # set only alongside the constant, never instead of it.
     expected = {"active", "permanent"}
     check("MAILABLE excludes every status that means DND is on",
           _email_dnd_values(segments.MAILABLE, "not_eq") == expected,

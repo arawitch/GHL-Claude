@@ -69,9 +69,9 @@ def confirmed_bad() -> list[dict]:
     Worth excluding from a paid verification run: you would be paying to be
     told what you already know.
 
-    Only as good as validEmail, which is barely populated in this location --
-    49 contacts carry it at all and none are true. So this cohort currently
-    resolves to 3 contacts and removes almost nothing. Check
+    Only as good as validEmail, and some locations have not populated it at all
+    -- in sub-account U23Jnu7rscfzAOUmSevW this cohort resolves to 3 contacts
+    and removes essentially nothing. Check
     sending.validation_data_available() before treating a small number here as
     "the list is already clean" rather than "GHL has no data to answer with".
     """
