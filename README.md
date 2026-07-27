@@ -87,6 +87,43 @@ The tag list is hand-curated in `ghl/sending.py` and does not update itself. A
 new suppression tag added in the GHL UI will not be honoured until it is added
 there.
 
+## ⚠️ Before sending an email containing a one-click registration link
+
+**Turn UTM tracking OFF on that send.**
+
+GoHighLevel wraps links in its click tracker and appends its own UTM parameters.
+On the 2026-07-26 newsletter that produced:
+
+```
+https://link.msgsndr.com/email-tracking/d87b88b75f5
+  ?contactId={{contact.id}}&first_name={{contact.first_name}}
+  &last_name={{contact.last_name}}&email={{contact.email}}
+  &timezone=GMT-7&schedule_id=1
+  &utm_source=email&utm_medium=email marketing      <-- unencoded space
+```
+
+A raw space is not valid in a URL. Most clients tolerate it; strict corporate
+mail gateways may rewrite or reject the whole link. On that send, both
+registrations that recorded a click but never reached WebinarJam were corporate
+domains (`caduluth.com`, `otcservices.com`), while every consumer domain
+succeeded. Not proof, but the pattern fits.
+
+Checklist for any send carrying a one-click link:
+
+1. **UTM tracking off** for that campaign
+2. `schedule_id` matches the session number for that week (1, 2, 3 ...) -- this
+   is the *session* number, not the global schedule id the API uses
+3. Include a visible fallback beneath the one-click CTA:
+   `Didn't work? https://event.webinarjam.com/gyywz/register/088v6bgy`
+4. Send yourself a real test (not a preview) and click it, so merge fields
+   resolve and the redirect is exercised end to end
+
+After the send, recover anyone whose click did not register:
+
+```bash
+python3 cli.py register --webinar-id 53 --schedule-id 107 --file clicks.csv --apply
+```
+
 ## Weekly webinar send plan
 
 ```bash
