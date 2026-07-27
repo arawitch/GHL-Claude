@@ -46,7 +46,7 @@ def html(body: str, cta: str | None = None, fallback: bool = False) -> str:
     if cta:
         parts.append(
             f'<p style="margin:28px 0;"><a href="{cta}" '
-            'style="background:#1a5fb4;color:#fff;padding:14px 26px;'
+            'style="background:#16a34a;color:#fff;padding:15px 30px;font-weight:600;'
             'border-radius:6px;text-decoration:none;display:inline-block;">'
             'Reserve My Seat</a></p>'
         )
