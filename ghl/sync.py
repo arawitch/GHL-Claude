@@ -16,6 +16,7 @@ record it finds first.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from .client import GHLClient, GHLError
@@ -100,13 +101,21 @@ def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int
     return report
 
 
-def reconcile(ghl: GHLClient, prefix: str, report: SyncReport) -> list[tuple[str, int, int]]:
+def reconcile(ghl: GHLClient, prefix: str, report: SyncReport,
+              settle_seconds: float = 15.0) -> list[tuple[str, int, int]]:
     """Compare WebinarJam's counts against what GHL actually holds.
 
     A shortfall here is the signal that a webhook silently dropped events.
+
+    GoHighLevel's tag counts are eventually consistent: a count taken straight
+    after writing reports the pre-write value, so reconciling immediately
+    reports a shortfall on every run and trains you to ignore it. Any apparent
+    shortfall is therefore re-checked once after a settling delay, and only a
+    gap that survives the recheck is reported.
     """
     rows = []
-    for role, suffix in SUFFIXES.items():
+    pending = []
+    for suffix in SUFFIXES.values():
         tag = f"{prefix} {suffix}"
         expected = report.tags_applied.get(tag, 0) + report.already_tagged.get(tag, 0)
         if not expected:
@@ -115,5 +124,14 @@ def reconcile(ghl: GHLClient, prefix: str, report: SyncReport) -> list[tuple[str
             actual = ghl.count_contacts([has_tag(tag)])
         except GHLError:
             actual = -1
-        rows.append((tag, expected, actual))
+        (pending if 0 <= actual < expected else rows).append((tag, expected, actual))
+
+    if pending:
+        time.sleep(settle_seconds)
+        for tag, expected, _ in pending:
+            try:
+                actual = ghl.count_contacts([has_tag(tag)])
+            except GHLError:
+                actual = -1
+            rows.append((tag, expected, actual))
     return rows
