@@ -54,14 +54,45 @@ def add_tags(client: GHLClient, contact_id: str, tags: list[str]) -> None:
     client.request("POST", f"/contacts/{contact_id}/tags", json={"tags": tags})
 
 
+def _tag_in(ghl: GHLClient, email: str, wanted: list[str], apply: bool,
+            report: SyncReport, label: str) -> bool:
+    """Tag every record holding this address in one location. True if matched."""
+    try:
+        contacts = find_contacts_by_email(ghl, email)
+    except GHLError as exc:
+        report.errors.append(f"[{label}] {email}: lookup failed - {exc}")
+        return False
+    if not contacts:
+        return False
+
+    for contact in contacts:
+        existing = set(contact.get("tags") or [])
+        missing = [t for t in wanted if t not in existing]
+        for tag in wanted:
+            bucket = report.already_tagged if tag in existing else report.tags_applied
+            key = tag if label == "main" else f"{tag} [{label}]"
+            bucket[key] = bucket.get(key, 0) + 1
+        if missing and apply:
+            try:
+                add_tags(ghl, contact["id"], missing)
+            except GHLError as exc:
+                report.errors.append(f"[{label}] {email}: tagging failed - {exc}")
+    return True
+
+
 def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int,
          prefix: str, stayed_minutes: int = 0, apply: bool = False,
-         event_finished: bool = True) -> SyncReport:
+         event_finished: bool = True, secondary: GHLClient | None = None) -> SyncReport:
     """Pull one session's registrants and mirror them into GHL tags.
 
     With apply=False nothing is written -- the report shows exactly what would
     change, which is the only safe way to run this the first time against a
     production contact database.
+
+    `secondary` is an optional second location (the SMS sub-account). Sub-accounts
+    hold separate contact databases, so a registrant may exist in one, both, or
+    neither. Nothing is created: a contact absent from a location is simply not
+    tagged there, and `matched` counts anyone found in at least one location.
     """
     report = SyncReport()
 
@@ -75,28 +106,13 @@ def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int
                          event_finished=event_finished)
         wanted = [f"{prefix} {SUFFIXES[r]}" for r in roles if r in SUFFIXES]
 
-        try:
-            contacts = find_contacts_by_email(ghl, email)
-        except GHLError as exc:
-            report.errors.append(f"{email}: lookup failed - {exc}")
-            continue
-
-        if not contacts:
+        hit = _tag_in(ghl, email, wanted, apply, report, "main")
+        if secondary is not None:
+            hit = _tag_in(secondary, email, wanted, apply, report, "sms") or hit
+        if hit:
+            report.matched += 1
+        else:
             report.unmatched.append(email)
-            continue
-        report.matched += 1
-
-        for contact in contacts:
-            existing = set(contact.get("tags") or [])
-            missing = [t for t in wanted if t not in existing]
-            for tag in wanted:
-                bucket = report.already_tagged if tag in existing else report.tags_applied
-                bucket[tag] = bucket.get(tag, 0) + 1
-            if missing and apply:
-                try:
-                    add_tags(ghl, contact["id"], missing)
-                except GHLError as exc:
-                    report.errors.append(f"{email}: tagging failed - {exc}")
 
     return report
 

@@ -36,6 +36,14 @@ foreach ($v in @('GHL_API_KEY','GHL_LOCATION_ID','WEBINARJAM_API_KEY')) {
   }
 }
 
+# The SMS sub-account is optional. If both values are present the sync tags
+# there too; if not, it silently stays single-location rather than failing.
+if ($env:GHL_SMS_API_KEY -and $env:GHL_SMS_LOCATION_ID) {
+  Write-Log "SMS sub-account configured ($env:GHL_SMS_LOCATION_ID)"
+} else {
+  Write-Log 'SMS sub-account not configured - tagging the main location only'
+}
+
 $py = $null
 foreach ($c in @('python','py','python3')) {
   try { if (& $c --version 2>$null) { $py = $c; break } } catch {}

@@ -326,9 +326,16 @@ def _sync_one(client: GHLClient, wj, args) -> None:
         print(f"  session runs {sched_date} - not finished yet, so only the")
         print("  registration tag is applied (attendance is not knowable yet)\n")
 
+    import os
+    secondary = None
+    if os.environ.get("GHL_SMS_API_KEY") and os.environ.get("GHL_SMS_LOCATION_ID"):
+        secondary = GHLClient(token=os.environ["GHL_SMS_API_KEY"],
+                              location_id=os.environ["GHL_SMS_LOCATION_ID"])
+        print(f"  also tagging in SMS location {secondary.location_id}\n")
+
     rep = syncmod.sync(wj, client, args.webinar_id, args.schedule_id, prefix,
                        stayed_minutes=args.stayed_minutes, apply=args.apply,
-                       event_finished=event_finished)
+                       event_finished=event_finished, secondary=secondary)
 
     print(f"  registrants in WebinarJam   {rep.registrants:>7,}")
     print(f"  matched to a GHL contact    {rep.matched:>7,}")
