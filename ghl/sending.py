@@ -16,6 +16,7 @@ from .segments import MAILABLE, all_of, has_tag
 # Tags that must never receive marketing email, discovered by auditing the
 # location's 544 tags. Ordered roughly by how much damage a send would do.
 SUPPRESSION_TAGS = [
+    "verified bad",    # invalid/abuse/spamtrap verdict from email verification
     "spamtrap",        # sending here is the fastest route to a blocklist
     "complainer",      # previously hit "report spam"
     "never send",      # largest single suppression set in this location
