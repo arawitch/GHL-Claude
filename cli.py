@@ -364,6 +364,71 @@ def _sync_one(client: GHLClient, wj, args) -> None:
         print("\n  re-run with --apply to write these tags")
 
 
+def cmd_register(client: GHLClient, args) -> None:
+    """Register people who clicked a one-click link but never landed in WebinarJam.
+
+    GHL records the click; WebinarJam records the registration. A click with no
+    matching registration means the link resolved for the tracker but the
+    registration itself did not complete -- a mail gateway rewriting the URL, a
+    scanner following it, or a client mangling the query string.
+    """
+    wj = WebinarJamClient()
+
+    emails = list(args.email or [])
+    if args.file:
+        with open(args.file, newline="", encoding="utf-8-sig") as fh:
+            head = fh.readline()
+            fh.seek(0)
+            if "," in head or "@" not in head:      # looks like a CSV with a header
+                for row in csv.DictReader(fh):
+                    for k, v in row.items():
+                        if k and "email" in k.lower() and v and "@" in v:
+                            emails.append(v.strip())
+                            break
+            else:                                    # one address per line
+                emails += [l.strip() for l in fh if "@" in l]
+
+    emails = list(dict.fromkeys(e.strip().lower() for e in emails if e.strip()))
+    if not emails:
+        print("no email addresses given; use --email or --file", file=sys.stderr)
+        return
+
+    already = {(r.get("email") or "").strip().lower()
+               for r in wj.registrants(args.webinar_id, args.schedule_id)}
+    todo = [e for e in emails if e not in already]
+
+    print(f"  {len(emails):,} address(es) given")
+    print(f"  {len(emails) - len(todo):,} already registered in WebinarJam")
+    print(f"  {len(todo):,} to register\n")
+    if not todo:
+        return
+    if not args.apply:
+        for e in todo[:20]:
+            print(f"    {e}")
+        print("\n  re-run with --apply to register them")
+        return
+
+    ok = failed = nocontact = 0
+    for email in todo:
+        found = list(client.search_contacts(
+            filters=[{"field": "email", "operator": "eq", "value": email}], max_records=1))
+        if not found:
+            print(f"    skip (no GHL contact): {email}")
+            nocontact += 1
+            continue
+        ct = found[0]
+        try:
+            wj.register(args.webinar_id, args.schedule_id, email,
+                        ct.get("firstName") or "", ct.get("lastName") or "")
+            ok += 1
+            print(f"    registered: {email}")
+        except WebinarJamError as exc:
+            failed += 1
+            print(f"    FAILED {email}: {str(exc)[:120]}")
+    print(f"\n  {ok:,} registered, {failed:,} failed, {nocontact:,} skipped")
+    print("  WebinarJam sends each of them the confirmation and join link.")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -429,6 +494,14 @@ def main() -> int:
                    help="also tag '<prefix> stayed' for anyone whose live watch time reached this")
     p.add_argument("--apply", action="store_true", help="write tags (default is a dry run)")
     p.set_defaults(func=cmd_sync_webinar)
+
+    p = sub.add_parser("register")
+    p.add_argument("--webinar-id", type=int, required=True)
+    p.add_argument("--schedule-id", type=int, required=True, help="global schedule id, e.g. 107")
+    p.add_argument("--email", action="append", help="address to register (repeatable)")
+    p.add_argument("--file", help="CSV or newline list of addresses")
+    p.add_argument("--apply", action="store_true", help="register them (default is a dry run)")
+    p.set_defaults(func=cmd_register)
 
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")

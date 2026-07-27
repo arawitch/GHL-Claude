@@ -78,6 +78,34 @@ class WebinarJamClient:
         """[{schedule: 107, date: '2026-07-30 14:00', comment: ...}, ...]"""
         return self.webinar(webinar_id).get("schedules", [])
 
+    def register(self, webinar_id: int, schedule_id: int, email: str,
+                 first_name: str, last_name: str = "", phone: str = "",
+                 phone_country_code: str = "", country: str = "") -> dict:
+        """Register one person for a session.
+
+        The register endpoint names the session parameter `schedule`, while the
+        registrants endpoint calls the same value `schedule_id`. Both take the
+        global schedule id rather than the session number used by one-click
+        links.
+
+        WebinarJam is idempotent here: registering an address that is already
+        registered returns success without creating a duplicate.
+        """
+        fields = {
+            "webinar_id": webinar_id,
+            "schedule": schedule_id,
+            "email": email,
+            "first_name": first_name or email.split("@")[0],
+        }
+        if last_name:
+            fields["last_name"] = last_name
+        if phone:
+            fields["phone"] = phone
+            fields["phone_country_code"] = phone_country_code or "+1"
+        if country:
+            fields["country"] = country
+        return self._post("/register", **fields)
+
     def registrants(self, webinar_id: int, schedule_id: int) -> Iterator[dict]:
         """Yield every registrant for one session, following pagination."""
         page = 1
