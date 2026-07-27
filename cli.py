@@ -245,15 +245,53 @@ def cmd_rollout(client: GHLClient, args) -> None:
     print(f"  wrote {written:,} recipients to {out}")
 
 
+def _relevant_schedules(wj, webinar_id, window_days):
+    """Schedules within +/- window_days of now.
+
+    Covers both directions on purpose: an upcoming session needs its
+    registrations mirrored so Track B can exclude them, and a session that has
+    just run needs its attendance and replay data pulled in.
+    """
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    out = []
+    for s in wj.schedules(webinar_id):
+        try:
+            when = datetime.strptime(str(s.get("date", "")), "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        if abs((when - now).total_seconds()) <= window_days * 86400:
+            out.append((s.get("schedule"), when))
+    return sorted(out, key=lambda x: x[1])
+
+
 def cmd_sync_webinar(client: GHLClient, args) -> None:
     wj = WebinarJamClient()
+
+    if args.auto:
+        found = _relevant_schedules(wj, args.webinar_id, args.window_days)
+        if not found:
+            print(f"no session within {args.window_days} days of now - nothing to sync")
+            return
+        print(f"auto: {len(found)} session(s) within {args.window_days} days\n")
+        for sched, when in found:
+            args.schedule_id = sched
+            args.prefix = None
+            _sync_one(client, wj, args)
+            print()
+        return
 
     if not args.schedule_id:
         print(f"schedules for webinar {args.webinar_id}:")
         for s in wj.schedules(args.webinar_id):
             print(f"  schedule={s.get('schedule')}  {s.get('date')}  {s.get('comment','')}")
-        print("\n  pass --schedule-id to sync one session")
+        print("\n  pass --schedule-id to sync one session, or --auto")
         return
+
+    _sync_one(client, wj, args)
+
+
+def _sync_one(client: GHLClient, wj, args) -> None:
 
     # Attendance roles are meaningless until the session has run: WebinarJam
     # reports attended_live as "No" for everyone beforehand.
@@ -376,6 +414,9 @@ def main() -> int:
     p = sub.add_parser("sync-webinar")
     p.add_argument("--webinar-id", type=int, required=True)
     p.add_argument("--schedule-id", type=int, help="omit to list available schedules")
+    p.add_argument("--auto", action="store_true",
+                   help="sync every session within --window-days of now; no weekly edits needed")
+    p.add_argument("--window-days", type=int, default=7)
     p.add_argument("--prefix", help="tag prefix, e.g. \"7/30\"; derived from the schedule date if omitted")
     p.add_argument("--stayed-minutes", type=int, default=0,
                    help="also tag '<prefix> stayed' for anyone whose live watch time reached this")
