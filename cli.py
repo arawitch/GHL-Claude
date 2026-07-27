@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
-from ghl import segments, sending, reactivation, weekly, rollout
+from ghl import segments, sending, reactivation, weekly, rollout, sync as syncmod
+from ghl.webinarjam import WebinarJamClient, WebinarJamError
 
 
 def build_filters(args) -> list[dict]:
@@ -244,6 +245,80 @@ def cmd_rollout(client: GHLClient, args) -> None:
     print(f"  wrote {written:,} recipients to {out}")
 
 
+def cmd_sync_webinar(client: GHLClient, args) -> None:
+    wj = WebinarJamClient()
+
+    if not args.schedule_id:
+        print(f"schedules for webinar {args.webinar_id}:")
+        for s in wj.schedules(args.webinar_id):
+            print(f"  schedule={s.get('schedule')}  {s.get('date')}  {s.get('comment','')}")
+        print("\n  pass --schedule-id to sync one session")
+        return
+
+    # Attendance roles are meaningless until the session has run: WebinarJam
+    # reports attended_live as "No" for everyone beforehand.
+    from datetime import datetime
+    sched_date = None
+    for s in wj.schedules(args.webinar_id):
+        if str(s.get("schedule")) == str(args.schedule_id):
+            sched_date = str(s.get("date", ""))
+    event_finished = True
+    if sched_date:
+        try:
+            event_finished = datetime.strptime(sched_date, "%Y-%m-%d %H:%M") < datetime.now()
+        except ValueError:
+            pass
+
+    prefix = args.prefix
+    if not prefix:
+        for s in wj.schedules(args.webinar_id):
+            if str(s.get("schedule")) == str(args.schedule_id):
+                d = str(s.get("date", ""))[:10].split("-")
+                if len(d) == 3:
+                    prefix = f"{int(d[1])}/{int(d[2])}"
+        if not prefix:
+            print("could not derive a tag prefix; pass --prefix", file=sys.stderr)
+            return
+
+    mode = "APPLYING" if args.apply else "DRY RUN - nothing will be written"
+    print(f"webinar {args.webinar_id} schedule {args.schedule_id} -> tag prefix {prefix!r}")
+    print(f"{mode}\n")
+
+    if not event_finished:
+        print(f"  session runs {sched_date} - not finished yet, so only the")
+        print("  registration tag is applied (attendance is not knowable yet)\n")
+
+    rep = syncmod.sync(wj, client, args.webinar_id, args.schedule_id, prefix,
+                       stayed_minutes=args.stayed_minutes, apply=args.apply,
+                       event_finished=event_finished)
+
+    print(f"  registrants in WebinarJam   {rep.registrants:>7,}")
+    print(f"  matched to a GHL contact    {rep.matched:>7,}")
+    print(f"  no GHL contact found        {len(rep.unmatched):>7,}")
+    if rep.tags_applied or rep.already_tagged:
+        print(f"\n  {'tag':<28}{'to apply':>10}{'already':>10}")
+        print("  " + "-" * 48)
+        for tag in sorted(set(rep.tags_applied) | set(rep.already_tagged)):
+            print(f"  {tag:<28}{rep.tags_applied.get(tag,0):>10,}{rep.already_tagged.get(tag,0):>10,}")
+    if rep.unmatched:
+        print(f"\n  unmatched addresses (first 10):")
+        for e in rep.unmatched[:10]:
+            print(f"    {e}")
+    if rep.errors:
+        print(f"\n  {len(rep.errors)} error(s):")
+        for e in rep.errors[:5]:
+            print(f"    {e}")
+
+    if args.apply:
+        print("\n  RECONCILIATION (GHL tag counts vs this session)")
+        print("  " + "-" * 48)
+        for tag, expected, actual in syncmod.reconcile(client, prefix, rep):
+            flag = "" if actual >= expected else "   <-- SHORTFALL"
+            print(f"  {tag:<28}{expected:>8,} expected{actual:>8,} in GHL{flag}")
+    else:
+        print("\n  re-run with --apply to write these tags")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -297,6 +372,15 @@ def main() -> int:
     p.add_argument("--exclude-file", help="CSV of addresses to skip (verifier bad verdicts)")
     p.add_argument("--out", help="CSV path for this step's recipients")
     p.set_defaults(func=cmd_rollout)
+
+    p = sub.add_parser("sync-webinar")
+    p.add_argument("--webinar-id", type=int, required=True)
+    p.add_argument("--schedule-id", type=int, help="omit to list available schedules")
+    p.add_argument("--prefix", help="tag prefix, e.g. \"7/30\"; derived from the schedule date if omitted")
+    p.add_argument("--stayed-minutes", type=int, default=0,
+                   help="also tag '<prefix> stayed' for anyone whose live watch time reached this")
+    p.add_argument("--apply", action="store_true", help="write tags (default is a dry run)")
+    p.set_defaults(func=cmd_sync_webinar)
 
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")
