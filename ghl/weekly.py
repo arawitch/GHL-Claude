@@ -78,28 +78,35 @@ def non_openers(event: str, open_tag: str, suffixes=None) -> list[dict]:
 # per-registrant link anyway. So the default plan cedes pre-event Track A to
 # WebinarJam and keeps only what WebinarJam does not do: persuading people who
 # have not registered, and everything after the event ends.
+#
+# Three of the six sends land on Thursday. That is not aggression for its own
+# sake -- it is what their own archive shows works. Every past event with
+# above-average clicks ran the same shape: a Wednesday "tomorrow at 2", a
+# Thursday morning "we're live today", a Thursday midday "will you be joining
+# at 2?", and a "going live in 15 mins". The midday and 15-minute sends are the
+# shortest emails they send and among the best-clicking.
+#
+# wed-registered-primer is Track A but does not duplicate WebinarJam: it carries
+# no join link and no logistics, only a question to sit with before the event.
 SLOTS_WEBINARJAM = [
-    ("mon-invite-1",      "B", unregistered),
-    ("tue-invite-2",      "B", unregistered),
-    ("thu-last-call",     "B", unregistered),
-    ("thu-replay",        "-", no_shows),
-    ("fri-replay-final",  "-", no_shows),
-    ("fri-attendee-next", "-", attendees),
+    ("mon-invite-1",           "B", unregistered),
+    ("tue-invite-2",           "B", unregistered),
+    ("wed-invite-3",           "B", unregistered),
+    ("wed-registered-primer",  "A", registered),
+    ("thu-am-invite",          "B", unregistered),
+    ("thu-noon-invite",        "B", unregistered),
+    ("thu-15min-invite",       "B", unregistered),
+    ("thu-replay",             "-", no_shows),
+    ("fri-replay-final",       "-", no_shows),
+    ("fri-attendee-next",      "-", attendees),
 ]
 
 # Use this only if WebinarJam's reminders are disabled or land in spam. Verify
 # before switching: if both are live, registrants get two sets of reminders.
-SLOTS_GHL_REMINDERS = [
-    ("mon-invite-1",      "B", unregistered),
-    ("tue-invite-2",      "B", unregistered),
-    ("wed-reminder-24h",  "A", registered),
-    ("thu-reminder-1h",   "A", registered),
-    ("thu-live-now",      "A", registered),
-    ("thu-last-call",     "B", unregistered),
-    ("thu-replay",        "-", no_shows),
-    ("fri-replay-final",  "-", no_shows),
-    ("fri-attendee-next", "-", attendees),
-]
+SLOTS_GHL_REMINDERS = SLOTS_WEBINARJAM[:4] + [
+    ("thu-reminder-1h",        "A", registered),
+    ("thu-live-now",           "A", registered),
+] + SLOTS_WEBINARJAM[4:]
 
 SLOTS = SLOTS_WEBINARJAM
 

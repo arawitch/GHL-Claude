@@ -124,6 +124,39 @@ After the send, recover anyone whose click did not register:
 python3 cli.py register --webinar-id 53 --schedule-id 107 --file clicks.csv --apply
 ```
 
+## ⚠️ What actually drives clicks on this list
+
+The first Week 1 draft clicked at **0.07–0.13%**. The seven highest-clicking
+webinar invites in this location's send archive were pulled and read; they share
+a structure the draft had none of. Anything written for Track A should follow it.
+
+| | Their winners | The draft that failed |
+| --- | --- | --- |
+| Greeting | `Hey {{contact.first_name}},` | `Hi …` |
+| The problem | an observable market condition — *"One headline comes out... SPY rips."* | a maxim — *"the market rewards discipline"* |
+| Recognition | second-person fragments, one per line: *"You wait too long. / You enter too early. / You chase the move."* | none |
+| The turn | *"Sound familiar?"* | none |
+| The offer | a bulleted **"I'll walk you through:"** list | a paragraph |
+| CTAs | **two** — an inline text link mid-body, then a P.S. with a second | one button |
+| Subject | the time is in it: `Tomorrow at 2:`, `Will you be joining at 2?`, `Going live in 15 mins` | `The market rewards discipline` |
+
+Two things worth knowing before copying the formula:
+
+**The shortest emails click best.** `Will you be joining at 2?` and `Going live
+in 15 mins` are four and five short paragraphs with a single plain text link,
+and they outperform everything longer. Do not pad them.
+
+**The winners contain no performance figures.** This corrects an earlier warning
+here. The `5 trades. 5 wins.` and `$125 per contract` subject lines belong to
+*daily recap* sends to a ~3,100 list — not to the webinar invites carrying the
+11–23% campaign click rates. So the invite format can be copied wholesale
+without importing the earnings-claim problem, and there is no trade-off to make.
+
+Click rate is also downstream of open rate, which halved (20.6% → 11.15%) over
+the same period. Subject lines carrying a time and a question are what recovered
+it before. `previewText` on each template is now distinct from the subject
+rather than a copy of it, so the inbox line is not wasted repeating itself.
+
 ## Weekly webinar send plan
 
 ```bash
@@ -140,15 +173,25 @@ carrying that registrant's unique join link. Duplicating those in GHL would
 double-message the people most likely to attend, and GHL cannot reproduce the
 per-registrant link. So the default plan cedes pre-event Track A to WebinarJam:
 
-| Slot | Track | Audience | Sent by |
-| --- | --- | --- | --- |
-| mon-invite-1 | B | engaged list, minus registrants | GHL |
-| tue-invite-2 | B | engaged list, minus registrants | GHL |
-| *48h / 24h / 1h / 15min* | A | registrants | **WebinarJam** |
-| thu-last-call | B | engaged list, minus registrants | GHL |
-| thu-replay | post | no-shows | GHL |
-| fri-replay-final | post | no-shows | GHL |
-| fri-attendee-next | post | attendees | GHL |
+| Slot | Track | Audience | Template | Sent by |
+| --- | --- | --- | --- | --- |
+| mon-invite-1 | B | engaged list, minus registrants | `W1-A1-Mon-NotReg` | GHL |
+| tue-invite-2 | B | engaged list, minus registrants | `W1-A2-Tue-NotReg` | GHL |
+| wed-invite-3 | B | engaged list, minus registrants | `W1-A3-Wed-NotReg` | GHL |
+| wed-registered-primer | A | registrants | `W1-B1-WedAM-Registered` | GHL |
+| *48h / 24h / 1h / 15min* | A | registrants | — | **WebinarJam** |
+| thu-am-invite | B | engaged list, minus registrants | `W1-A4-Thu8am-NotReg` | GHL |
+| thu-noon-invite | B | engaged list, minus registrants | `W1-A5-ThuNoon-NotReg` | GHL |
+| thu-15min-invite | B | engaged list, minus registrants | `W1-A6-Thu145-NotReg` | GHL |
+| thu-replay | post | no-shows | `W1-D1-ThuPM-NoShow` | GHL |
+| fri-replay-final | post | no-shows | `W1-D2-Fri-NoShow` | GHL |
+| fri-attendee-next | post | attendees | `W1-C1` / `W1-C2` | GHL |
+
+Three of the six invites land on Thursday. That is not aggression for its own
+sake — it is the shape of every above-average event in the archive. The Thursday
+midday and 15-minute sends are the two shortest emails on the list and among the
+best-clicking. `wed-registered-primer` goes to registrants but carries no join
+link and no logistics, so it does not collide with WebinarJam's reminders.
 
 GHL keeps exactly what WebinarJam does not do: persuading people who have not
 registered, and everything after the event ends. Pass `--reminders ghl` to add
