@@ -20,7 +20,7 @@ while tagged contacts returned the opens and clicks. Opens are included in the
 candidate net as well as clicks -- a click cannot happen without the tracker
 firing -- so a campaign that tags opens but not clicks is still covered.
 
-Two traps this module exists to avoid:
+Three traps this module exists to avoid:
 
 **A click is per message, not per contact.** A contact who clicked a stock-pick
 link in the newsletter and a contact who clicked "reserve my seat" in a webinar
@@ -29,15 +29,30 @@ contact level. Registering the first person into a webinar they never asked
 about is a real cost. So clicks are attributed to the specific send, and only
 sends that actually carried a registration link count as registration intent.
 
-**Which sends carried one is detected, not assumed.** Each send's rendered HTML
-is fetched and searched for the WebinarJam domain. Hardcoding a subject list
-would silently mis-classify the moment a subject line is edited in the UI --
-which is exactly what happened to this week's A3.
+**Which sends carried one is detected, not assumed.** Hardcoding a subject list
+would silently mis-classify the moment a subject is edited in the UI, which is
+what happened to this week's A3. But searching the HTML for the WebinarJam host
+does not work either: GHL rewrites every link in a tracked send to its own click
+tracker, and `nonTrackingDownloadUrl` returns a body byte-identical to the
+tracked one rather than a raw copy. So the 2026-07-26 newsletter -- which
+carried a one-click register link -- scored "no register link", which would have
+dropped 23 clickers from review. Links are resolved one hop through the tracker
+instead. (The tracker 403s the default urllib User-Agent, and that failure also
+reads as "no register link", so a browser UA is sent.)
+
+**A click can be ambiguous even on a send that asks for registration.** If a
+send has a register link *and* something else clickable, `status: clicked` does
+not say which was clicked -- the API exposes no per-link data. That newsletter
+had both a register link and a Loom video, so its clickers cannot be treated as
+registration intent. `split_by_intent` keeps them in a third bucket for a human
+to decide on rather than guessing. A send whose only links are the one-click and
+its own fallback is *not* ambiguous: both go to WebinarJam.
 """
 
 from __future__ import annotations
 
 import re
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -55,6 +70,27 @@ INTERACTION_TAGS = [
 
 WEBINARJAM_HOST = "event.webinarjam.com"
 
+# GoHighLevel rewrites every link in a tracked send to its own click tracker, so
+# the destination host is absent from the HTML. Both downloadUrl and
+# nonTrackingDownloadUrl return the *same* rewritten body -- the "non-tracking"
+# copy is byte-identical, not a raw one. Searching the HTML for the WebinarJam
+# host therefore returns a false negative on any tracked send: the 2026-07-26
+# newsletter carried a one-click register link and was scored "no register
+# link", which would have dropped 23 clickers from review.
+#
+# The tracker resolves without merge fields, so each wrapped link is followed
+# one hop to recover its destination.
+TRACKER_RE = re.compile(r"https://link\.msgsndr\.com/email-tracking/[A-Za-z0-9]+")
+
+# The default urllib User-Agent is rejected with a 403 by both the tracker and
+# the storage host, which reads as "no register link" rather than as an error.
+UA = {"User-Agent": "Mozilla/5.0 (compatible; GHL-Claude)"}
+
+
+def _fetch(url: str, timeout: int = 45) -> str:
+    req = urllib.request.Request(url, headers=UA)
+    return urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8", "replace")
+
 
 @dataclass
 class Send:
@@ -65,6 +101,11 @@ class Send:
     recipients: int
     tracking: bool
     asks_registration: bool = False
+    # True when the send has a clickable destination that is NOT registration,
+    # so a recorded click cannot be attributed to the register link. A send whose
+    # only links are the one-click and its fallback is not ambiguous: both go to
+    # WebinarJam, so any click on it is registration intent.
+    ambiguous_click: bool = False
 
 
 @dataclass
@@ -93,9 +134,10 @@ def _ms_to_dt(ms) -> datetime | None:
 def recent_sends(client: GHLClient, days: int = 7) -> list[Send]:
     """Completed email sends from the last `days`, flagged for a register link.
 
-    A send counts as asking for a registration if its rendered HTML contains the
-    WebinarJam domain. That is checked rather than inferred from the subject,
-    because subjects get edited in the UI after the template is built.
+    A send asks for registration if any of its links resolves to WebinarJam, and
+    a click on it is ambiguous if any link resolves anywhere else. Both are
+    measured from the resolved destinations rather than inferred from the
+    subject, which gets edited in the UI after the template is built.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     out: list[Send] = []
@@ -116,14 +158,52 @@ def recent_sends(client: GHLClient, days: int = 7) -> list[Send]:
         url = row.get("nonTrackingDownloadUrl") or row.get("downloadUrl")
         if url:
             try:
-                body = urllib.request.urlopen(url, timeout=45).read().decode("utf-8", "replace")
-                send.asks_registration = WEBINARJAM_HOST in body
+                body = _fetch(url)
+                dests = link_destinations(body)
+                send.asks_registration = any(WEBINARJAM_HOST in d for d in dests)
+                send.ambiguous_click = any(WEBINARJAM_HOST not in d for d in dests)
             except Exception:
-                # Unreadable body: assume it asks, so a real click is never
-                # dropped. A false positive here only widens the review list.
+                # Unreadable body: assume it asks and that a click is ambiguous,
+                # so a real click is never silently dropped or auto-actioned.
                 send.asks_registration = True
+                send.ambiguous_click = True
         out.append(send)
     return sorted(out, key=lambda s: s.scheduled)
+
+
+def link_destinations(body: str) -> set[str]:
+    """Real destinations of a send's clickable links, tracker hops resolved.
+
+    Unsubscribe and font links are not click targets and are excluded, so a send
+    whose only real link is the register link is not scored ambiguous.
+    """
+    dests: set[str] = set()
+    for raw in set(re.findall(r'href="([^"]+)"', body)):
+        href = raw.replace("&amp;", "&")
+        if "unsubscribe" in href or "fonts.googleapis.com" in href:
+            continue
+        m = TRACKER_RE.match(href)
+        if not m:
+            if href.startswith("http"):
+                dests.add(href.split("?")[0])
+            continue
+        try:
+            req = urllib.request.Request(m.group(0), headers=UA)
+            resp = urllib.request.build_opener(_NoRedirect()).open(req, timeout=30)
+            target = resp.headers.get("Location") or ""
+        except urllib.error.HTTPError as exc:
+            target = exc.headers.get("Location") or ""
+        except Exception:
+            target = ""
+        dests.add((target or m.group(0)).split("?")[0])
+    return dests
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The tracker's 302 target is the answer; following it wastes a request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def candidates(client: GHLClient, since: str, until: str):
@@ -190,17 +270,16 @@ def contact_events(client: GHLClient, contact_id: str,
     return found
 
 
-def subject_map(sends: list[Send]) -> tuple[dict[str, str], set[str]]:
-    """(subject -> label, labels that carried a register link).
+def subject_map(sends: list[Send]) -> tuple[dict[str, str], set[str], set[str]]:
+    """(subject -> label, labels asking for registration, labels that are ambiguous).
 
     Two sends can share a subject -- this week's A3 was sent twice, twelve
     minutes apart, under two campaign names. A message only records the subject,
-    so those are indistinguishable per contact and collapse into one label.
-    `asks_registration` is OR'd across a collision: if either send carried a
-    register link, a click on that subject is registration intent.
+    so those are indistinguishable per contact and collapse into one label. Both
+    flags are OR'd across a collision: if either send carried a register link a
+    click is intent, and if either was ambiguous the merged label is ambiguous.
     """
     labels: dict[str, str] = {}
-    asks: set[str] = set()
     for s in sends:
         if not s.subject:
             continue
@@ -209,19 +288,23 @@ def subject_map(sends: list[Send]) -> tuple[dict[str, str], set[str]]:
             labels[s.subject] = f"{base} (x2)"
         else:
             labels[s.subject] = s.name
+    # Second pass, so a label renamed by a collision still collects both flags.
+    asks: set[str] = set()
+    ambiguous: set[str] = set()
+    for s in sends:
+        if not s.subject:
+            continue
         if s.asks_registration:
             asks.add(labels[s.subject])
-    # A relabelled collision must carry its register flag over to the new label.
-    for s in sends:
-        if s.subject and s.asks_registration:
-            asks.add(labels[s.subject])
-    return labels, asks
+        if s.ambiguous_click:
+            ambiguous.add(labels[s.subject])
+    return labels, asks, ambiguous
 
 
 def scan(client: GHLClient, sends: list[Send], since: str, until: str,
          progress=None) -> list[Clicker]:
     """Everyone with a click on any of `sends`, with the sends named."""
-    by_subject, _ = subject_map(sends)
+    by_subject, _, _ = subject_map(sends)
     results: list[Clicker] = []
     checked = 0
     for contact in candidates(client, since, until):
@@ -246,10 +329,26 @@ def scan(client: GHLClient, sends: list[Send], since: str, until: str,
 
 
 def split_by_intent(clickers: list[Clicker], sends: list[Send]
-                    ) -> tuple[list[Clicker], list[Clicker]]:
-    """(clicked a send carrying a register link, clicked only other sends)."""
-    _, asks = subject_map(sends)
-    intent, other = [], []
+                    ) -> tuple[list[Clicker], list[Clicker], list[Clicker]]:
+    """(definite registration intent, ambiguous, no register link clicked).
+
+    Definite means a click on a send whose every clickable link went to
+    WebinarJam registration -- there is nothing else it could have been. Those
+    are safe to auto-register. Ambiguous means the only register-carrying send
+    they clicked also had something else clickable, so the click may have been
+    for that instead; the API exposes no per-link data, so this cannot be
+    resolved and is left for a human.
+    """
+    _, asks, ambiguous = subject_map(sends)
+    definite: list[Clicker] = []
+    unclear: list[Clicker] = []
+    other: list[Clicker] = []
     for cl in clickers:
-        (intent if any(s in asks for s in cl.register_sends) else other).append(cl)
-    return intent, other
+        clicked = set(cl.register_sends)
+        if clicked & (asks - ambiguous):
+            definite.append(cl)
+        elif clicked & asks:
+            unclear.append(cl)
+        else:
+            other.append(cl)
+    return definite, unclear, other

@@ -147,15 +147,37 @@ candidate set by tag first — the campaigns apply `opened/clicked webinar invit
 on interaction, which bumps `dateUpdated`. Sampling confirmed the shortcut:
 contacts with no open/click tag returned `delivered` for every message.
 
-Three traps the command exists to handle:
+Four traps the command exists to handle:
 
 **A click is per message, not per contact.** Someone who clicked a stock-pick
 link in the newsletter and someone who clicked "Reserve My Seat" look identical
 at contact level. So clicks are attributed to a specific send, and only sends
-whose rendered HTML actually contains `event.webinarjam.com` count as
-registration intent. Which sends those are is **detected, not assumed** — a
-hardcoded subject list breaks the moment a subject is edited in the UI, which is
-what happened to A3 this week.
+carrying a register link count as registration intent. Which sends those are is
+**detected, not assumed** — a hardcoded subject list breaks the moment a subject
+is edited in the UI, which is what happened to A3 this week.
+
+**Searching the HTML for `event.webinarjam.com` does not work.** GHL rewrites
+every link in a tracked send to `link.msgsndr.com`, and `nonTrackingDownloadUrl`
+returns a body **byte-identical** to the tracked one rather than a raw copy. The
+2026-07-26 newsletter carried a one-click register link and scored "no register
+link" — which would have dropped 23 clickers from review. Links are resolved one
+hop through the tracker instead:
+
+```
+https://link.msgsndr.com/email-tracking/d87b88b75f5
+  -> 302 https://event.webinarjam.com/gyywz/register/088v6bgy/1click
+```
+
+The tracker returns **403 to the default urllib User-Agent**, and that failure
+reads as "no register link" rather than as an error, so a browser UA is sent.
+
+**A click can be ambiguous even on a send that asks for registration.** If a
+send has a register link *and* something else clickable, `status: clicked` does
+not say which was clicked — there is no per-link data in the API. The 7/26
+newsletter had both a register link and a Loom video, so its clickers land in a
+third bucket for a human to decide on. A send whose only links are the one-click
+and its own fallback is *not* ambiguous: both go to WebinarJam, so any click on
+it is registration intent.
 
 **Click tracking off means no click data.** Turning tracking off protects the
 one-click link (see the UTM warning above) but makes clicks on that send

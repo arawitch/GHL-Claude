@@ -442,12 +442,15 @@ def cmd_clicks(client: GHLClient, args) -> None:
         return
 
     print(f"SENDS in the last {args.days} days\n")
-    print(f"  {'send':<28}{'scheduled':<17}{'delivered':>10}  {'tracking':<9}reg link")
-    print("  " + "-" * 74)
+    print(f"  {'send':<28}{'scheduled':<17}{'delivered':>10}  {'tracking':<9}"
+          f"{'reg link':<10}click means")
+    print("  " + "-" * 92)
     for s in sends:
+        means = ("register" if s.asks_registration and not s.ambiguous_click
+                 else "AMBIGUOUS" if s.asks_registration else "-")
         print(f"  {s.name[:27]:<28}{s.scheduled.strftime('%a %m-%d %H:%MZ'):<17}"
               f"{s.recipients:>10,}  {'on' if s.tracking else 'OFF':<9}"
-              f"{'yes' if s.asks_registration else 'no'}")
+              f"{'yes' if s.asks_registration else 'no':<10}{means}")
     dark = [s for s in sends if not s.tracking and s.asks_registration]
     if dark:
         print("\n  NOTE: click tracking was off on "
@@ -460,9 +463,10 @@ def cmd_clicks(client: GHLClient, args) -> None:
     found = clicks.scan(client, sends, args.since, args.until,
                         progress=lambda n, f: print(f"  {n} candidates, {f} clickers",
                                                     end="\r", file=sys.stderr))
-    intent, other = clicks.split_by_intent(found, sends)
-    print(f"\n{len(found):,} clicker(s): {len(intent):,} on a send carrying a "
-          f"register link, {len(other):,} on other sends\n")
+    intent, unclear, other = clicks.split_by_intent(found, sends)
+    print(f"\n{len(found):,} clicker(s): {len(intent):,} definite registration "
+          f"intent, {len(unclear):,} ambiguous, {len(other):,} on sends with no "
+          f"register link\n")
 
     registered: set[str] = set()
     if args.webinar_id and args.schedule_id:
@@ -480,6 +484,16 @@ def cmd_clicks(client: GHLClient, args) -> None:
         if tag:
             tagged = "yes" if tag in (c.tags or []) else "NO"
         print(f"  {c.email[:37]:<38}{in_wj:<7}{tagged:<8}{'; '.join(c.register_sends)[:44]}")
+
+    if unclear:
+        missing_unclear = [c for c in unclear if c.email and c.email not in registered]
+        print(f"\n  AMBIGUOUS -- clicked a send that had a register link AND "
+              f"something else\n  clickable. The API exposes no per-link data, so "
+              f"these cannot be resolved.\n  {len(missing_unclear):,} of "
+              f"{len(unclear):,} are not in WebinarJam. Decide, do not assume:")
+        for c in sorted(unclear, key=lambda x: x.email):
+            mark = "not in WJ" if c.email not in registered else "in WJ"
+            print(f"    {c.email[:37]:<38}{mark:<11}{'; '.join(c.register_sends)[:34]}")
 
     if other:
         print(f"\n  clicked only a send with no register link "
