@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
-from ghl import segments, sending, reactivation, weekly, rollout, sync as syncmod
+from ghl import segments, sending, reactivation, weekly, rollout, clicks, sync as syncmod
 from ghl.webinarjam import WebinarJamClient, WebinarJamError
 
 
@@ -429,6 +429,83 @@ def cmd_register(client: GHLClient, args) -> None:
     print("  WebinarJam sends each of them the confirmation and join link.")
 
 
+def cmd_clicks(client: GHLClient, args) -> None:
+    """Who clicked a GHL email this week, and whether they made it to WebinarJam.
+
+    Clicks are only reachable per contact, three API hops deep -- see
+    ghl/clicks.py for why, and for why a click is attributed to a specific send
+    rather than to the contact.
+    """
+    sends = clicks.recent_sends(client, days=args.days)
+    if not sends:
+        print(f"no completed sends in the last {args.days} days")
+        return
+
+    print(f"SENDS in the last {args.days} days\n")
+    print(f"  {'send':<28}{'scheduled':<17}{'delivered':>10}  {'tracking':<9}reg link")
+    print("  " + "-" * 74)
+    for s in sends:
+        print(f"  {s.name[:27]:<28}{s.scheduled.strftime('%a %m-%d %H:%MZ'):<17}"
+              f"{s.recipients:>10,}  {'on' if s.tracking else 'OFF':<9}"
+              f"{'yes' if s.asks_registration else 'no'}")
+    dark = [s for s in sends if not s.tracking and s.asks_registration]
+    if dark:
+        print("\n  NOTE: click tracking was off on "
+              f"{', '.join(s.name for s in dark)}.")
+        print("  Clicks there are unrecorded and cannot appear below. Untracked")
+        print("  links are also unrewritten, so those one-clicks reached")
+        print("  WebinarJam directly -- absence of data is not absence of clicks.")
+
+    print(f"\nscanning clickers ...", file=sys.stderr)
+    found = clicks.scan(client, sends, args.since, args.until,
+                        progress=lambda n, f: print(f"  {n} candidates, {f} clickers",
+                                                    end="\r", file=sys.stderr))
+    intent, other = clicks.split_by_intent(found, sends)
+    print(f"\n{len(found):,} clicker(s): {len(intent):,} on a send carrying a "
+          f"register link, {len(other):,} on other sends\n")
+
+    registered: set[str] = set()
+    if args.webinar_id and args.schedule_id:
+        wj = WebinarJamClient()
+        registered = {(r.get("email") or "").strip().lower()
+                      for r in wj.registrants(args.webinar_id, args.schedule_id)}
+
+    missing = [c for c in intent if c.email and c.email not in registered]
+    print(f"  {'email':<38}{'in WJ':<7}{'tagged':<8}sends clicked")
+    print("  " + "-" * 96)
+    tag = f"{args.prefix} register" if args.prefix else None
+    for c in sorted(intent, key=lambda x: x.email):
+        in_wj = "yes" if c.email in registered else "NO"
+        tagged = "-"
+        if tag:
+            tagged = "yes" if tag in (c.tags or []) else "NO"
+        print(f"  {c.email[:37]:<38}{in_wj:<7}{tagged:<8}{'; '.join(c.register_sends)[:44]}")
+
+    if other:
+        print(f"\n  clicked only a send with no register link "
+              f"(NOT registration intent, left alone):")
+        for c in sorted(other, key=lambda x: x.email):
+            print(f"    {c.email[:37]:<38}{'; '.join(c.register_sends)[:44]}")
+
+    if args.out:
+        with open(args.out, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["email", "firstName", "lastName", "phone", "contactId",
+                        "in_webinarjam", "clicked_sends"])
+            for c in sorted(intent, key=lambda x: x.email):
+                w.writerow([c.email, c.first, c.last, c.phone, c.contact_id,
+                            "yes" if c.email in registered else "no",
+                            "; ".join(c.register_sends)])
+        print(f"\n  wrote {len(intent):,} row(s) to {args.out}")
+
+    if registered:
+        print(f"\n  {len(missing):,} clicked a register link but are not in WebinarJam.")
+        if missing:
+            print("  Register them with:")
+            print(f"    python3 cli.py register --webinar-id {args.webinar_id} "
+                  f"--schedule-id {args.schedule_id} --file {args.out or 'clicks.csv'} --apply")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -502,6 +579,17 @@ def main() -> int:
     p.add_argument("--file", help="CSV or newline list of addresses")
     p.add_argument("--apply", action="store_true", help="register them (default is a dry run)")
     p.set_defaults(func=cmd_register)
+
+    p = sub.add_parser("clicks", help="who clicked a GHL email, and whether "
+                                      "they reached WebinarJam")
+    p.add_argument("--days", type=int, default=7, help="how far back to look for sends")
+    p.add_argument("--since", default="2026-07-27", help="ISO date, start of the contact window")
+    p.add_argument("--until", default="2100-01-01", help="ISO date, end of the contact window")
+    p.add_argument("--webinar-id", type=int, help="cross-reference WebinarJam registrants")
+    p.add_argument("--schedule-id", type=int, help="global schedule id, e.g. 107")
+    p.add_argument("--prefix", help="event tag prefix, e.g. \"7/30\", to check tagging")
+    p.add_argument("--out", help="CSV of register-intent clickers, for `register --file`")
+    p.set_defaults(func=cmd_clicks)
 
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")

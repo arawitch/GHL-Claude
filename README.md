@@ -118,11 +118,55 @@ Checklist for any send carrying a one-click link:
 4. Send yourself a real test (not a preview) and click it, so merge fields
    resolve and the redirect is exercised end to end
 
-After the send, recover anyone whose click did not register:
+After the send, find the clicks and recover anyone who did not reach WebinarJam:
 
 ```bash
-python3 cli.py register --webinar-id 53 --schedule-id 107 --file clicks.csv --apply
+python3 cli.py clicks --webinar-id 53 --schedule-id 107 --prefix "7/30" \
+                      --out lists/clicks.csv
+python3 cli.py register --webinar-id 53 --schedule-id 107 \
+                        --file lists/clicks.csv --apply
+python3 cli.py sync-webinar --webinar-id 53 --schedule-id 107 --apply
 ```
+
+### Finding clicks is harder than it should be
+
+There is **no click-reporting endpoint**. `GET /emails/statistics` and every
+variation of it 404s, and `/contacts/search` rejects `lastEmailClickedAt`,
+`emailClicked`, `lastEmailOpenedAt` and friends as invalid fields. Click data is
+only reachable per contact, three hops deep:
+
+```
+/conversations/search?contactId=      -> conversation id
+/conversations/{id}/messages          -> message, meta.email.messageIds
+/conversations/messages/email/{id}    -> {"status": "clicked"}
+```
+
+`status` is authoritative: `delivered` / `opened` / `clicked`. Walking it for
+every recipient would be ~11,000 contacts, so `cli.py clicks` narrows the
+candidate set by tag first — the campaigns apply `opened/clicked webinar invite`
+on interaction, which bumps `dateUpdated`. Sampling confirmed the shortcut:
+contacts with no open/click tag returned `delivered` for every message.
+
+Three traps the command exists to handle:
+
+**A click is per message, not per contact.** Someone who clicked a stock-pick
+link in the newsletter and someone who clicked "Reserve My Seat" look identical
+at contact level. So clicks are attributed to a specific send, and only sends
+whose rendered HTML actually contains `event.webinarjam.com` count as
+registration intent. Which sends those are is **detected, not assumed** — a
+hardcoded subject list breaks the moment a subject is edited in the UI, which is
+what happened to A3 this week.
+
+**Click tracking off means no click data.** Turning tracking off protects the
+one-click link (see the UTM warning above) but makes clicks on that send
+unrecordable. That is the right trade: an untracked link is also unrewritten, so
+the one-click reaches WebinarJam directly. Absence of click data on an untracked
+send is not absence of clicks — check WebinarJam registrations instead.
+
+**`successCount` is unreliable on small sends.** The 23-recipient Track B send
+on 2026-07-29 reported `successCount: 0, failed: 0, error: 0` while every
+sampled recipient had actually received it. Verify small sends by looking for
+the message on a contact, not by reading the counter.
 
 ## ⚠️ What actually drives clicks on this list
 
