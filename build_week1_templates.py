@@ -72,7 +72,14 @@ CSS = (
 
 def html(body: str, cta: str | None = None, fallback: bool = False,
          ps: str | None = None) -> str:
-    parts = [f'<div style="{CSS}">', body]
+    """Assemble one email.
+
+    Order matters and is taken from their top performers: body, sign-off, name,
+    P.S., CTA, fallback. An earlier version appended the name after the whole
+    block, which left "Dan" orphaned below the "if that button doesn't work"
+    line -- signing the disclaimer rather than the email.
+    """
+    parts = [f'<div style="{CSS}">', body, SIGN]
     if ps:
         parts.append(P % f"<strong>P.S.</strong> {ps}")
     if cta:
@@ -131,7 +138,7 @@ EMAILS: list[dict] = [
              P % "The market gives us dozens of charts to look at every day. Most never become trades. And that&rsquo;s by design.",
              P % "This Thursday at 2 PM Pacific, I&rsquo;m hosting a free live training where I&rsquo;ll show you why we skip roughly 95% of the setups we evaluate and the roadmap we use to decide when a trade is actually worth taking.",
              P % "If you&rsquo;ve ever felt like you&rsquo;re constantly chasing the market or wondering if you&rsquo;re forcing trades, I think you&rsquo;ll get a lot out of this session.",
-         ]), cta=ONE_CLICK, fallback=True) + SIGN),
+         ]), cta=ONE_CLICK, fallback=True)),
 
     dict(key="W1-A2-Tue-NotReg", subject="I learned this lesson the hard way",
          preview="The trade that changed how I think about being right",
@@ -142,10 +149,10 @@ EMAILS: list[dict] = [
              P % "I found myself on the wrong side of the market.",
              P % "Instead of accepting that the market wasn&rsquo;t doing what I expected, I spent too much time trying to make the trade work.",
              P % "Looking back, the biggest mistake wasn&rsquo;t the losing trade. It was believing I had to prove I was right.",
-             P % "The market doesn&rsquo;t care about your opinion. Your job isn&rsquo;t to predict what should happen. It&rsquo;s to recognise when the odds are in your favour and have the discipline to do nothing when they aren&rsquo;t.",
+             P % "The market doesn&rsquo;t care about your opinion. Your job isn&rsquo;t to predict what should happen. It&rsquo;s to recognize when the odds are in your favour and have the discipline to do nothing when they aren&rsquo;t.",
              P % "Today our team passes on the overwhelming majority of setups we look at. Not because we don&rsquo;t like trading &mdash; because every dollar you don&rsquo;t lose is a dollar you don&rsquo;t have to earn back.",
              P % "This Thursday I&rsquo;ll show you exactly how we decide when a trade deserves our attention and, more importantly, when it doesn&rsquo;t.",
-         ]), cta=ONE_CLICK, fallback=True) + SIGN),
+         ]), cta=ONE_CLICK, fallback=True)),
 
     # ---- A3 onward: rebuilt on the structure of the top-clicking invites ----
 
@@ -184,7 +191,7 @@ EMAILS: list[dict] = [
              ps="The traders having the hardest time right now are usually the "
                 "ones deciding trade by trade. Tomorrow I&rsquo;ll show you the "
                 "roadmap we use instead. Grab your seat below:",
-             cta=ONE_CLICK, fallback=True) + SIGN),
+             cta=ONE_CLICK, fallback=True)),
 
     # Modelled on "I'm givng you the blueprint to consistent trading today" /
     # "We're live today at 2 PM Pacific" -- the same body sent to 6,782 and
@@ -201,7 +208,7 @@ EMAILS: list[dict] = [
              lines(
                  "It comes from having rules for what you&rsquo;ll take.",
                  "It comes from having rules for how much you&rsquo;ll risk.",
-                 "And it comes from recognising when the best decision is to stay on the sidelines.",
+                 "And it comes from recognizing when the best decision is to stay on the sidelines.",
              ),
              P % "That&rsquo;s what I&rsquo;ll be breaking down today.",
              P % "I&rsquo;ll show you what we look at inside University of Options before a single dollar goes into a trade, how we evaluate a setup, and why a structured process helps traders make clearer decisions instead of second-guessing every candle.",
@@ -210,9 +217,9 @@ EMAILS: list[dict] = [
              P % "I&rsquo;ll see you today at 2 Pacific,",
          ]),
              ps="You don&rsquo;t have to catch every move to become a better "
-                "trader. You need a process that helps you recognise the right "
+                "trader. You need a process that helps you recognize the right "
                 "opportunities and skip the wrong ones. Save your spot here:",
-             cta=ONE_CLICK, fallback=True) + SIGN),
+             cta=ONE_CLICK, fallback=True)),
 
     # Modelled on "Will you be joining at 2?" / "Will you be joining me?" --
     # their single best-clicking webinar email, and the shortest. Four short
@@ -230,7 +237,7 @@ EMAILS: list[dict] = [
              P % "I&rsquo;ll walk through how we&rsquo;re looking at the market right now, what we&rsquo;re being careful with, and how a more structured approach helps you stop making decisions out of fear, frustration, or FOMO.",
              inline("You can register here"),
              P % "See you soon,",
-         ]), cta=ONE_CLICK, fallback=True) + SIGN),
+         ]), cta=ONE_CLICK, fallback=True)),
 
     # New slot. Modelled on "Going live in 15 mins" (6,780) and "going live in
     # 15" -- five lines, one link. Their sequence always has three Thursday
@@ -245,7 +252,7 @@ EMAILS: list[dict] = [
              P % "If you want to see how we decide what&rsquo;s worth trading in this market &mdash; and what we skip &mdash; now&rsquo;s the time to grab your spot.",
              inline("Save your seat here"),
              P % "I&rsquo;ll see you inside,",
-         ]), cta=ONE_CLICK, fallback=True) + SIGN),
+         ]), cta=ONE_CLICK, fallback=True)),
 
     # ---------------- Track B: registered ----------------
     # No registration CTA anywhere in this one: they are already registered and
@@ -264,7 +271,7 @@ EMAILS: list[dict] = [
              P % "See you tomorrow at 2 PM Pacific,",
          ]),
              ps="Your join link is in the confirmation email from WebinarJam. "
-                "It&rsquo;s unique to you, so keep hold of it.") + SIGN),
+                "It&rsquo;s unique to you, so keep hold of it.")),
 
     # ---------------- Track C: attended ----------------
     dict(key="W1-C1-ThuPM-Attended", subject="Thanks for joining me today",
@@ -281,7 +288,7 @@ EMAILS: list[dict] = [
              P % "I appreciate you being there today,",
          ]),
              ps=f'If you&rsquo;d rather talk it through with someone first, you '
-                f'can <a href="{BOOK_CALL}">schedule a call with our team</a>.') + SIGN),
+                f'can <a href="{BOOK_CALL}">schedule a call with our team</a>.')),
 
     dict(key="W1-C2-Fri-Attended", subject="A quick follow up on yesterday",
          preview="The part most traders underestimate",
@@ -293,7 +300,7 @@ EMAILS: list[dict] = [
              P % "That&rsquo;s the part most people underestimate, and it&rsquo;s exactly what we help our members with every day &mdash; the rules, the review, and having someone to check your thinking against.",
              P % f'If you&rsquo;re ready for the next step, <a href="{SALES_LINK}">you can see everything that&rsquo;s included here</a>.',
              P % "I hope to see you inside,",
-         ])) + SIGN),
+         ]))),
 
     # ---------------- Track D: registered, did not attend ----------------
     # Subject is logistics, not sentiment: their replay sends that clicked best
@@ -312,7 +319,7 @@ EMAILS: list[dict] = [
          ]),
              ps=f'Once you&rsquo;ve watched, if you&rsquo;d like help applying '
                 f'that roadmap to your own trading, <a href="{SALES_LINK}">you '
-                f'can learn more here</a>.') + SIGN),
+                f'can learn more here</a>.')),
 
     dict(key="W1-D2-Fri-NoShow", subject="Taking the replay down tonight",
          preview="Last chance to watch Thursday's training",
@@ -325,7 +332,7 @@ EMAILS: list[dict] = [
              P % "That single shift has saved me more money than any indicator ever has.",
              P % f'<a href="{REPLAY_LINK}">You can still watch the replay here</a>.',
              P % "I hope you enjoy it,",
-         ])) + SIGN),
+         ]))),
 
     # ---------------- Weekend: the offer deadline ----------------
     dict(key="W1-E1-Sat-Deadline", subject="This closes tomorrow night",
@@ -340,7 +347,7 @@ EMAILS: list[dict] = [
              P % f'<a href="{SALES_LINK}">Here&rsquo;s everything that&rsquo;s included</a>.',
          ]),
              ps=f'Still deciding? <a href="{BOOK_CALL}">Book a call</a> and '
-                f'we&rsquo;ll talk it through honestly.') + SIGN),
+                f'we&rsquo;ll talk it through honestly.')),
 
     dict(key="W1-E2-Sun-Deadline", subject="Closes at midnight",
          preview="Last note on Thursday's pricing",
@@ -353,7 +360,7 @@ EMAILS: list[dict] = [
              P % "If that&rsquo;s the kind of trading you want to build, we&rsquo;d like to help you build it.",
              P % f'<a href="{SALES_LINK}">Join before midnight</a>',
          ]),
-             ps="Either way, I&rsquo;ll see you Thursday. We do this every week.") + SIGN),
+             ps="Either way, I&rsquo;ll see you Thursday. We do this every week.")),
 ]
 
 
