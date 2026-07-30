@@ -86,8 +86,23 @@ class GHLClient:
                 delay *= 2
                 continue
 
-            # 429 and 5xx are transient; everything else is a real answer.
-            if resp.status_code == 429 or resp.status_code >= 500:
+            # 429 and 5xx are transient; everything else is a real answer --
+            # except 401, which this API also returns for conditions that have
+            # nothing to do with authorisation. Two seen live, both transient
+            # and both recovering on the next attempt with the same token:
+            #
+            #   {"message": "Command timed out"}                (slow query)
+            #   {"message": "Invalid Private Integration token"} (mid-run, on a
+            #       token that worked seconds before and seconds after)
+            #
+            # The second one is the dangerous one: it reads as a revoked token,
+            # so it invites re-issuing credentials to fix a blip. On 2026-07-30
+            # it failed 73 contact lookups in one sync run while the token was
+            # perfectly valid. A genuinely bad token still fails, just after the
+            # same bounded retries.
+            transient_auth = resp.status_code == 401 and any(
+                s in resp.text for s in ("Command timed out", "Invalid Private Integration token"))
+            if resp.status_code == 429 or resp.status_code >= 500 or transient_auth:
                 if attempt == attempts:
                     raise GHLError(resp.status_code, method, path, resp.text)
                 time.sleep(float(resp.headers.get("Retry-After", delay)))
