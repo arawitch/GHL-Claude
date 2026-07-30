@@ -546,8 +546,25 @@ def cmd_smslist(client: GHLClient, args) -> None:
         if n:
             print(f"    {reason:<24}{n:>6,}")
 
+    if args.tag:
+        if not args.apply:
+            print(f"\n  DRY RUN -- would tag these {len(targets):,} with "
+                  f"{args.tag!r} in both locations")
+            print("  re-run with --apply to write it")
+        else:
+            print(f"\n  tagging {len(targets):,} with {args.tag!r} ...", file=sys.stderr)
+            counts = smstarget.apply_tag(
+                client, sms, targets, args.tag,
+                progress=lambda n, t: print(f"  {n}/{t}", end="\r", file=sys.stderr))
+            print(f"\n  tagged {counts['sms']:,} in the SMS location "
+                  f"(where the workflow runs)")
+            print(f"  tagged {counts['main']:,} in the main location (for reporting)")
+            if counts["failed"]:
+                print(f"  {counts['failed']:,} write(s) failed")
+
     if not args.out_dir:
-        print("\n  pass --out-dir to write the batches")
+        if not args.tag:
+            print("\n  pass --out-dir to write the batches, or --tag to tag them")
         return
 
     out = Path(args.out_dir)
@@ -657,6 +674,8 @@ def main() -> int:
     p.add_argument("--since", default="2026-07-27", help="ISO date, start of the attention window")
     p.add_argument("--until", default="2100-01-01", help="ISO date, end of the attention window")
     p.add_argument("--out-dir", help="directory to write the batch CSVs into")
+    p.add_argument("--tag", help='tag to apply, e.g. "7/30 sms invite"')
+    p.add_argument("--apply", action="store_true", help="write the tag (default is a dry run)")
     p.set_defaults(func=cmd_smslist)
 
     p = sub.add_parser("reactivation")

@@ -151,6 +151,33 @@ def build(main: GHLClient, sms: GHLClient, event_tag: str, since: str, until: st
     return out, rejected
 
 
+def apply_tag(main: GHLClient, sms: GHLClient, targets: list[Target], tag: str,
+              progress=None) -> dict[str, int]:
+    """Tag the selected targets in both locations.
+
+    The SMS location is where the workflow runs, so that tag is the one that
+    matters; the main-location copy exists so the same people can be excluded
+    from, or reported on alongside, the email sends. Both ids are already known
+    from selection, so this is a straight write with no re-lookup -- and no risk
+    of tagging a different contact than the one that was verified.
+    """
+    counts = {"sms": 0, "main": 0, "failed": 0}
+    for i, t in enumerate(targets, 1):
+        for label, client, contact_id in (("sms", sms, t.sms_contact_id),
+                                          ("main", main, t.contact_id)):
+            if not contact_id:
+                continue
+            try:
+                client.request("POST", f"/contacts/{contact_id}/tags",
+                               json={"tags": [tag]})
+                counts[label] += 1
+            except GHLError:
+                counts["failed"] += 1
+        if progress and i % 25 == 0:
+            progress(i, len(targets))
+    return counts
+
+
 def _find_in_sms(sms: GHLClient, email: str | None, phone: str) -> dict | None:
     for field, value in (("email", (email or "").strip()), ("phone", phone)):
         if not value:
