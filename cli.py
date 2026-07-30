@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
-from ghl import segments, sending, reactivation, weekly, rollout, clicks, sync as syncmod
+from ghl import (segments, sending, reactivation, weekly, rollout, clicks,
+                 smstarget, sync as syncmod)
 from ghl.webinarjam import WebinarJamClient, WebinarJamError
 
 
@@ -520,6 +522,49 @@ def cmd_clicks(client: GHLClient, args) -> None:
                   f"--schedule-id {args.schedule_id} --file {args.out or 'clicks.csv'} --apply")
 
 
+def cmd_smslist(client: GHLClient, args) -> None:
+    """A small, high-intent SMS list, checked against the SMS location too."""
+    token = os.environ.get("GHL_SMS_API_KEY")
+    location = os.environ.get("GHL_SMS_LOCATION_ID")
+    if not token or not location:
+        print("GHL_SMS_API_KEY and GHL_SMS_LOCATION_ID must be set", file=sys.stderr)
+        return
+    sms = GHLClient(token=token, location_id=location)
+
+    targets, rejected = smstarget.build(
+        client, sms, f"{args.prefix} register", args.since, args.until, args.count,
+        progress=lambda n, w: print(f"  {n}/{w} verified", end="\r", file=sys.stderr))
+
+    print(f"\n{len(targets):,} target(s) selected\n")
+    counts: dict[str, int] = {}
+    for t in targets:
+        counts[t.tier] = counts.get(t.tier, 0) + 1
+    for tier in sorted(counts):
+        print(f"  {tier:<34}{counts[tier]:>6,}")
+    print("\n  rejected while verifying:")
+    for reason, n in rejected.items():
+        if n:
+            print(f"    {reason:<24}{n:>6,}")
+
+    if not args.out_dir:
+        print("\n  pass --out-dir to write the batches")
+        return
+
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for i in range(0, len(targets), args.batch):
+        batch = targets[i:i + args.batch]
+        path = out / f"sms-batch{i // args.batch + 1}.csv"
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["phone", "firstName", "lastName", "email", "tier",
+                        "contactId", "smsContactId"])
+            for t in batch:
+                w.writerow([t.phone, t.first, t.last, t.email, t.tier,
+                            t.contact_id, t.sms_contact_id])
+        print(f"  wrote {len(batch):>4} to {path}")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -604,6 +649,15 @@ def main() -> int:
     p.add_argument("--prefix", help="event tag prefix, e.g. \"7/30\", to check tagging")
     p.add_argument("--out", help="CSV of register-intent clickers, for `register --file`")
     p.set_defaults(func=cmd_clicks)
+
+    p = sub.add_parser("smslist", help="high-intent SMS list for an imminent webinar")
+    p.add_argument("--prefix", required=True, help='event tag prefix, e.g. "7/30"')
+    p.add_argument("--count", type=int, default=300, help="how many targets to select")
+    p.add_argument("--batch", type=int, default=100, help="rows per output file")
+    p.add_argument("--since", default="2026-07-27", help="ISO date, start of the attention window")
+    p.add_argument("--until", default="2100-01-01", help="ISO date, end of the attention window")
+    p.add_argument("--out-dir", help="directory to write the batch CSVs into")
+    p.set_defaults(func=cmd_smslist)
 
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")
