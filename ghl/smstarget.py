@@ -57,6 +57,28 @@ ATTENDED_TAGS = [
 CLICK_TAGS = ["clicked webinar invite", "clicked email", "clicked newsletter"]
 OPEN_TAGS = ["opened webinar invite", "opened email"]
 
+# Current customers and members. The webinar pitches the programs these people
+# have already bought, so an invite is at best wasted and at worst irritating.
+BUYER_TAGS = [
+    "uoo member", "options member", "customer", "fx customer",
+    "purchased", "purchased workshop", "flight path member",
+    "foundingmembermarketmentor", "gold member", "current masters member",
+    "fs member", "prop bootcamp member", "grandfathered - active subscription",
+    "njc frontend buyer", "njc workshop purchase", "options nav new purchase",
+    "options nav 4k new purchase", "options navigator purchased",
+    "new options purchase", "new combo purchase", "futures new purchase",
+    "futures 4k new purchase", "options bot sale", "options bot presale",
+    "june oh purchase", "oh purchase",
+    "masters gold 3 month upgrade trial (free options trading course)",
+]
+
+# Deliberately NOT in BUYER_TAGS, each for a reason:
+#   cancelled masters program   -- a *former* customer, so not a current one.
+#                                  These are win-back targets and among the
+#                                  warmest non-members on the list.
+#   weekly newsletter subscriber-- free; a subscriber is not a buyer.
+#   njc- clicked purchase link  -- clicked the link, did not buy.
+
 
 @dataclass
 class Target:
@@ -75,13 +97,39 @@ def _any_tag(tags: list[str]) -> dict:
 
 
 def eligible(event_tag: str) -> list[dict]:
-    """Reachable by SMS and not already registered, as far as the main location knows."""
+    """Reachable by SMS, not registered, not a customer -- per the main location."""
     return [
         {"field": "phone", "operator": "exists"},
         {"field": "dnd", "operator": "eq", "value": False},
         {"field": "dndSettings.SMS.status", "operator": "not_eq", "value": "active"},
         {"field": "tags", "operator": "not_eq", "value": event_tag},
-    ] + [{"field": "tags", "operator": "not_eq", "value": t} for t in SUPPRESSION_TAGS]
+    ] + [{"field": "tags", "operator": "not_eq", "value": t}
+         for t in SUPPRESSION_TAGS + BUYER_TAGS]
+
+
+def disqualified(contact: dict, event_tag: str) -> str | None:
+    """Why this contact should not receive the invite, checked against one record.
+
+    Used to re-screen an already-tagged list. The registration tag is the moving
+    part: someone can register in the minutes between selection and sending, and
+    the copy tells them to sign up for something they are already signed up for.
+    """
+    tags = {t.lower() for t in (contact.get("tags") or [])}
+    if event_tag.lower() in tags:
+        return "registered"
+    hit = tags & {t.lower() for t in BUYER_TAGS}
+    if hit:
+        return f"customer ({sorted(hit)[0]})"
+    hit = tags & {t.lower() for t in SUPPRESSION_TAGS}
+    if hit:
+        return f"suppressed ({sorted(hit)[0]})"
+    if sms_blocked(contact):
+        return "sms dnd"
+    return None
+
+
+def remove_tag(client: GHLClient, contact_id: str, tag: str) -> None:
+    client.request("DELETE", f"/contacts/{contact_id}/tags", json={"tags": [tag]})
 
 
 def sms_blocked(contact: dict) -> bool:
@@ -176,6 +224,59 @@ def apply_tag(main: GHLClient, sms: GHLClient, targets: list[Target], tag: str,
         if progress and i % 25 == 0:
             progress(i, len(targets))
     return counts
+
+
+def rescreen(main: GHLClient, sms: GHLClient, tag: str, event_tag: str,
+             apply: bool) -> tuple[int, dict[str, int]]:
+    """Drop anyone from an already-tagged list who no longer qualifies.
+
+    Screening happens against the SMS location, because that is where the
+    registration tag is written by the WebinarJam sync and where an SMS opt-out
+    is recorded. The tag is pulled from *both* locations when it goes, so the
+    two do not drift.
+
+    Returns (how many still hold the tag, reasons for removal).
+    """
+    holders = list(sms.search_contacts([{"field": "tags", "operator": "eq", "value": tag}]))
+    reasons: dict[str, int] = {}
+    removed = 0
+    for contact in holders:
+        why = disqualified(contact, event_tag)
+        if not why:
+            continue
+        key = why.split(" (")[0]
+        reasons[key] = reasons.get(key, 0) + 1
+        removed += 1
+        if not apply:
+            continue
+        try:
+            remove_tag(sms, contact["id"], tag)
+        except GHLError:
+            pass
+        email = (contact.get("email") or "").strip()
+        if email:
+            for twin in main.search_contacts(
+                    [{"field": "email", "operator": "eq", "value": email}], max_records=5):
+                try:
+                    remove_tag(main, twin["id"], tag)
+                except GHLError:
+                    pass
+    return len(holders) - removed, reasons
+
+
+def top_up(main: GHLClient, sms: GHLClient, tag: str, event_tag: str,
+           since: str, until: str, want: int, have: int,
+           progress=None) -> tuple[list[Target], dict[str, int]]:
+    """Select replacements, skipping anyone who already carries the tag."""
+    if have >= want:
+        return [], {}
+    already = {(c.get("email") or "").strip().lower()
+               for c in sms.search_contacts(
+                   [{"field": "tags", "operator": "eq", "value": tag}])}
+    picked, rejected = build(main, sms, event_tag, since, until,
+                             want=want - have + len(already), progress=progress)
+    fresh = [t for t in picked if t.email not in already][:want - have]
+    return fresh, rejected
 
 
 def _find_in_sms(sms: GHLClient, email: str | None, phone: str) -> dict | None:

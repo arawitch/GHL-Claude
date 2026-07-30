@@ -296,18 +296,18 @@ def cmd_sync_webinar(client: GHLClient, args) -> None:
 def _sync_one(client: GHLClient, wj, args) -> None:
 
     # Attendance roles are meaningless until the session has run: WebinarJam
-    # reports attended_live as "No" for everyone beforehand.
-    from datetime import datetime
+    # reports attended_live as "No" for everyone beforehand. has_run() compares
+    # in the webinar's own timezone -- a naive comparison against datetime.now()
+    # runs on the container's UTC clock and declared a 2 PM Pacific session
+    # finished from 7 AM Pacific, tagging every registrant absent seven hours
+    # early. An unreadable date returns None, and None must not be treated as
+    # finished: writing attendance off a guess is the failure being prevented.
     sched_date = None
     for s in wj.schedules(args.webinar_id):
         if str(s.get("schedule")) == str(args.schedule_id):
             sched_date = str(s.get("date", ""))
-    event_finished = True
-    if sched_date:
-        try:
-            event_finished = datetime.strptime(sched_date, "%Y-%m-%d %H:%M") < datetime.now()
-        except ValueError:
-            pass
+    ran = wj.has_run(args.webinar_id, args.schedule_id)
+    event_finished = ran is True
 
     prefix = args.prefix
     if not prefix:
@@ -325,8 +325,14 @@ def _sync_one(client: GHLClient, wj, args) -> None:
     print(f"{mode}\n")
 
     if not event_finished:
-        print(f"  session runs {sched_date} - not finished yet, so only the")
-        print("  registration tag is applied (attendance is not knowable yet)\n")
+        if ran is None:
+            print("  could not read this session's start time, so attendance is")
+            print("  treated as unknown and only the registration tag is applied.")
+            print("  Pass a session that appears in the webinar's schedule list.\n")
+        else:
+            print(f"  session runs {sched_date} ({wj.webinar(args.webinar_id).get('timezone')})")
+            print("  - not finished yet, so only the registration tag is applied")
+            print("  (attendance is not knowable yet)\n")
 
     import os
     secondary = None
@@ -546,6 +552,17 @@ def cmd_smslist(client: GHLClient, args) -> None:
         if n:
             print(f"    {reason:<24}{n:>6,}")
 
+    if args.tag and args.rescreen:
+        kept, reasons = smstarget.rescreen(client, sms, args.tag,
+                                           f"{args.prefix} register", args.apply)
+        verb = "removed" if args.apply else "would remove"
+        print(f"\n  RE-SCREEN of {args.tag!r}: {kept:,} still qualify")
+        for reason, n in sorted(reasons.items()):
+            print(f"    {verb} {n:>4}  {reason}")
+        if not reasons:
+            print("    nothing to remove")
+        return
+
     if args.tag:
         if not args.apply:
             print(f"\n  DRY RUN -- would tag these {len(targets):,} with "
@@ -676,6 +693,9 @@ def main() -> int:
     p.add_argument("--out-dir", help="directory to write the batch CSVs into")
     p.add_argument("--tag", help='tag to apply, e.g. "7/30 sms invite"')
     p.add_argument("--apply", action="store_true", help="write the tag (default is a dry run)")
+    p.add_argument("--rescreen", action="store_true",
+                   help="re-check an already-tagged list and drop anyone who no "
+                        "longer qualifies, instead of selecting new targets")
     p.set_defaults(func=cmd_smslist)
 
     p = sub.add_parser("reactivation")

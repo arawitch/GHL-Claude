@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Iterator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -77,6 +79,34 @@ class WebinarJamClient:
     def schedules(self, webinar_id: int) -> list[dict]:
         """[{schedule: 107, date: '2026-07-30 14:00', comment: ...}, ...]"""
         return self.webinar(webinar_id).get("schedules", [])
+
+    def has_run(self, webinar_id: int, schedule_id: int) -> bool | None:
+        """Has this session already happened? None if the date cannot be read.
+
+        The `date` on a schedule carries no offset and is in the webinar's own
+        timezone, which the webinar record exposes separately. Comparing it to a
+        naive `datetime.now()` is wrong wherever the process clock is not in that
+        timezone -- and this one runs in UTC. On 2026-07-30 that made a 2 PM
+        Pacific session read as finished from 7 AM Pacific onward, seven hours
+        early, and tagged all 64 registrants `absent` before it started.
+
+        Returning None rather than True on an unreadable date matters: the caller
+        must not guess "finished" and write attendance tags off a guess.
+        """
+        webinar = self.webinar(webinar_id)
+        zone = webinar.get("timezone") or "UTC"
+        raw = ""
+        for s in webinar.get("schedules", []):
+            if str(s.get("schedule")) == str(schedule_id):
+                raw = str(s.get("date", ""))
+        if not raw:
+            return None
+        try:
+            naive = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+            start = naive.replace(tzinfo=ZoneInfo(zone))
+        except (ValueError, ZoneInfoNotFoundError):
+            return None
+        return start < datetime.now(timezone.utc)
 
     def register(self, webinar_id: int, schedule_id: int, email: str,
                  first_name: str, last_name: str = "", phone: str = "",
