@@ -79,6 +79,34 @@ BUYER_TAGS = [
 #   weekly newsletter subscriber-- free; a subscriber is not a buyer.
 #   njc- clicked purchase link  -- clicked the link, did not buy.
 
+# BUYER_TAGS answers "should this person get an invite?". A different question
+# is "should this person get the post-webinar sales follow-up?", and it splits
+# the buyers in two. Someone who already owns Options Navigator or the bot is
+# being sold what they have. Someone who bought a low-ticket front-end product
+# is the *best* audience for that pitch, not the worst.
+#
+# So only the first group is stripped from the attendance tags. The split was
+# set by Audry on 2026-07-30: the bot presale counts as owning the product,
+# while prop bootcamp is a separate offer and stays a live upsell target.
+OWNS_PITCHED_PRODUCT = [
+    "uoo member", "options member", "customer", "fx customer",
+    "flight path member", "grandfathered - active subscription",
+    "current masters member", "gold member", "fs member",
+    "options bot presale", "options bot sale",
+    "options nav new purchase", "options nav 4k new purchase",
+    "options navigator purchased",
+]
+
+# Buyers who stay in the follow-up: they bought something else, or something
+# smaller, and are the natural upsell.
+FRONT_END_BUYER = [
+    "prop bootcamp member", "njc frontend buyer", "njc workshop purchase",
+    "purchased workshop", "new combo purchase", "futures new purchase",
+    "futures 4k new purchase", "june oh purchase", "oh purchase",
+    "masters gold 3 month upgrade trial (free options trading course)",
+    "cancelled masters program",
+]
+
 
 @dataclass
 class Target:
