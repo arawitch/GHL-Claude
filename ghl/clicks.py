@@ -44,9 +44,15 @@ reads as "no register link", so a browser UA is sent.)
 send has a register link *and* something else clickable, `status: clicked` does
 not say which was clicked -- the API exposes no per-link data. That newsletter
 had both a register link and a Loom video, so its clickers cannot be treated as
-registration intent. `split_by_intent` keeps them in a third bucket for a human
-to decide on rather than guessing. A send whose only links are the one-click and
-its own fallback is *not* ambiguous: both go to WebinarJam.
+registration intent. `split_by_intent` keeps them in a third bucket rather than
+guessing. A send whose only links are the one-click and its own fallback is *not*
+ambiguous: both go to WebinarJam.
+
+To resolve that bucket, ask for the campaign's **link-level click report from the
+GHL UI** -- it exists there even though the API does not expose it, and it lists
+address, click count and timestamp per link. On 2026-07-29 it collapsed 17
+ambiguous newsletter clickers to one genuine unregistered click; bulk-registering
+the bucket would have put 16 video-watchers into a webinar.
 """
 
 from __future__ import annotations

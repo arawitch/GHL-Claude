@@ -175,9 +175,22 @@ reads as "no register link" rather than as an error, so a browser UA is sent.
 send has a register link *and* something else clickable, `status: clicked` does
 not say which was clicked — there is no per-link data in the API. The 7/26
 newsletter had both a register link and a Loom video, so its clickers land in a
-third bucket for a human to decide on. A send whose only links are the one-click
-and its own fallback is *not* ambiguous: both go to WebinarJam, so any click on
-it is registration intent.
+third bucket rather than being guessed at. A send whose only links are the
+one-click and its own fallback is *not* ambiguous: both go to WebinarJam, so any
+click on it is registration intent.
+
+#### Resolving the ambiguous bucket: ask for the per-link report
+
+**The GHL UI has per-link click data that the API does not expose.** When the
+command reports an ambiguous bucket, do not guess and do not bulk-register —
+ask for the campaign's link-level click report, which lists name, address, click
+count and timestamp per link. On 2026-07-29 that collapsed 17 ambiguous
+newsletter clickers down to **one** genuine unregistered click. Registering all
+17 would have put 16 people who watched a Loom video into a webinar.
+
+That report is also better evidence than a single click flag, because it shows
+repeat clicks — the signature of a link that is not working. Two of the twelve
+newsletter register-link clickers clicked 3 and 7 times.
 
 **Click tracking off means no click data.** Turning tracking off protects the
 one-click link (see the UTM warning above) but makes clicks on that send
