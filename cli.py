@@ -306,7 +306,7 @@ def _sync_one(client: GHLClient, wj, args) -> None:
     for s in wj.schedules(args.webinar_id):
         if str(s.get("schedule")) == str(args.schedule_id):
             sched_date = str(s.get("date", ""))
-    ran = wj.has_run(args.webinar_id, args.schedule_id)
+    ran = wj.has_run(args.webinar_id, args.schedule_id, args.settle_minutes)
     event_finished = ran is True
 
     prefix = args.prefix
@@ -660,6 +660,10 @@ def main() -> int:
                    help="sync every session within --window-days of now; no weekly edits needed")
     p.add_argument("--window-days", type=int, default=7)
     p.add_argument("--prefix", help="tag prefix, e.g. \"7/30\"; derived from the schedule date if omitted")
+    p.add_argument("--settle-minutes", type=int, default=120,
+                   help="minutes after the start before attendance is trusted; "
+                        "the API gives no duration, so this must exceed the "
+                        "session length or late joiners get tagged absent")
     p.add_argument("--stayed-minutes", type=int, default=0,
                    help="also tag '<prefix> stayed' for anyone whose live watch time reached this")
     p.add_argument("--apply", action="store_true", help="write tags (default is a dry run)")

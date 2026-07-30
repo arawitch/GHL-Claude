@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -80,8 +80,17 @@ class WebinarJamClient:
         """[{schedule: 107, date: '2026-07-30 14:00', comment: ...}, ...]"""
         return self.webinar(webinar_id).get("schedules", [])
 
-    def has_run(self, webinar_id: int, schedule_id: int) -> bool | None:
-        """Has this session already happened? None if the date cannot be read.
+    def has_run(self, webinar_id: int, schedule_id: int,
+                after_minutes: int = 0) -> bool | None:
+        """Has this session finished? None if the date cannot be read.
+
+        `after_minutes` is how long after the start time attendance can be
+        trusted. It matters because the API exposes a start time and no
+        duration, so "has started" is the only thing directly knowable -- and
+        acting on that tags everyone who has not joined *yet* as absent while
+        the session is still running. Someone joining at 2:30 then carries both
+        `attended` and `absent`, and the no-show follow-up is wrong for them.
+        Set it past the longest the session ever runs.
 
         The `date` on a schedule carries no offset and is in the webinar's own
         timezone, which the webinar record exposes separately. Comparing it to a
@@ -106,7 +115,7 @@ class WebinarJamClient:
             start = naive.replace(tzinfo=ZoneInfo(zone))
         except (ValueError, ZoneInfoNotFoundError):
             return None
-        return start < datetime.now(timezone.utc)
+        return start + timedelta(minutes=after_minutes) < datetime.now(timezone.utc)
 
     def register(self, webinar_id: int, schedule_id: int, email: str,
                  first_name: str, last_name: str = "", phone: str = "",
