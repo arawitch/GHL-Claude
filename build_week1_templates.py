@@ -202,13 +202,13 @@ EMAILS: list[dict] = [
          audience="current email list  MINUS  7/30 register, verified bad, buyer tags",
          body=html("".join([
              P % "Hey {{contact.first_name}},",
-             P % "We&rsquo;re going live today at 2 PM Pacific.",
-             P % "During this training I&rsquo;m going to walk you through how we decide what&rsquo;s worth trading &mdash; and, just as importantly, what isn&rsquo;t.",
+             P % "We&rsquo;re going live today at <strong>2 PM Pacific</strong>.",
+             P % "During this training I&rsquo;m going to walk you through how we decide what&rsquo;s worth trading &mdash; and, just as importantly, <strong>what isn&rsquo;t</strong>.",
              P % "Because consistency doesn&rsquo;t come from finding more opportunities.",
              lines(
                  "It comes from having rules for what you&rsquo;ll take.",
                  "It comes from having rules for how much you&rsquo;ll risk.",
-                 "And it comes from recognizing when the best decision is to stay on the sidelines.",
+                 "And it comes from recognizing when the best decision is to <strong>stay on the sidelines</strong>.",
              ),
              P % "That&rsquo;s what I&rsquo;ll be breaking down today.",
              P % "I&rsquo;ll show you what we look at inside University of Options before a single dollar goes into a trade, how we evaluate a setup, and why a structured process helps traders make clearer decisions instead of second-guessing every candle.",
@@ -231,8 +231,8 @@ EMAILS: list[dict] = [
          audience="current email list  MINUS  7/30 register, verified bad, buyer tags",
          body=html("".join([
              P % "Hey {{contact.first_name}},",
-             P % "Just a quick reminder that my options training is happening this afternoon at 2 PM Pacific.",
-             P % "If you&rsquo;ve been trading this market and feeling like you&rsquo;re constantly second-guessing your entries, your exits, and whether a setup is even worth taking... you&rsquo;re not alone.",
+             P % "Just a quick reminder that my options training is happening this afternoon at <strong>2 PM Pacific</strong>.",
+             P % "If you&rsquo;ve been trading this market and feeling like you&rsquo;re constantly second-guessing your entries, your exits, and whether a setup is even worth taking... <strong>you&rsquo;re not alone</strong>.",
              P % "That&rsquo;s exactly what we&rsquo;re going to talk about today.",
              P % "I&rsquo;ll walk through how we&rsquo;re looking at the market right now, what we&rsquo;re being careful with, and how a more structured approach helps you stop making decisions out of fear, frustration, or FOMO.",
              inline("You can register here"),
@@ -248,7 +248,7 @@ EMAILS: list[dict] = [
          audience="current email list  MINUS  7/30 register, verified bad, buyer tags",
          body=html("".join([
              P % "Hey {{contact.first_name}},",
-             P % "My free options training is starting in 15 minutes.",
+             P % "My free options training is starting in <strong>15 minutes</strong>.",
              P % "If you want to see how we decide what&rsquo;s worth trading in this market &mdash; and what we skip &mdash; now&rsquo;s the time to grab your spot.",
              inline("Save your seat here"),
              P % "I&rsquo;ll see you inside,",

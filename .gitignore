@@ -11,3 +11,4 @@ __pycache__/
 *.pyc
 .venv/
 week1-preview/
+paste-sheet.html
