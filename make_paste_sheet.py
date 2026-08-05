@@ -21,8 +21,14 @@ import html as htmlmod
 from pathlib import Path
 
 from build_week1_templates import EMAILS, ONE_CLICK, FALLBACK
+from build_replay_emails import EMAILS as REPLAY_EMAILS
+
+EMAILS = EMAILS + REPLAY_EMAILS
+SEND_TIMES_EXTRA = {e["key"]: e["send"] for e in REPLAY_EMAILS}
 
 THURSDAY = ["W1-A4-Thu8am-NotReg", "W1-A5-ThuNoon-NotReg", "W1-A6-Thu145-NotReg"]
+REPLAY = ["R1-Wed-ReplayReady", "R2-Thu-MissedIt", "R3-Fri-ComingDown",
+          "R4-Sat-OneIdea", "R5-Sun-LastCall", "R6-Sun-FinalHours"]
 
 SEND_TIMES = {
     "W1-A4-Thu8am-NotReg": "Thursday 8:00 AM PT",
@@ -107,13 +113,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--key", action="append", help="template key (repeatable)")
     ap.add_argument("--thursday", action="store_true", help="the three Thursday sends")
+    ap.add_argument("--replay", action="store_true", help="the six replay-chase sends")
     ap.add_argument("--registered", type=int, default=51,
                     help="how many are already registered, for the reminder")
     ap.add_argument("--out", default="paste-sheet.html")
     args = ap.parse_args()
 
     keys = list(args.key or [])
-    if args.thursday or not keys:
+    if args.replay:
+        keys = REPLAY
+    elif args.thursday or not keys:
         keys = THURSDAY
     by_key = {e["key"]: e for e in EMAILS}
 
@@ -125,7 +134,7 @@ def main() -> int:
     for k in keys:
         e = by_key[k]
         cards.append(CARD.format(
-            when=SEND_TIMES.get(k, k),
+            when={**SEND_TIMES, **SEND_TIMES_EXTRA}.get(k, k),
             subject=htmlmod.escape(e["subject"]),
             preview=htmlmod.escape(e.get("preview", "")),
             body=e["body"],

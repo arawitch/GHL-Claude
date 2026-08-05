@@ -12,3 +12,5 @@ __pycache__/
 .venv/
 week1-preview/
 paste-sheet.html
+replay-paste-sheet.html
+replay-preview/
