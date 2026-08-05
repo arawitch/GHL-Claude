@@ -250,13 +250,39 @@ spam from **both** GHL and Gmail, including emails with no links at all.
 | Sends | closers, 1:1 | all marketing, `From: dan@mg.…` |
 
 **Authentication is not the problem.** Both paths sign and align correctly, and
-neither domain is listed on Spamhaus DBL or SURBL. Two independently
-authenticated paths, different providers, different IPs, both landing in spam,
-leaves one shared factor: the **organizational domain**. Gmail and Microsoft roll
-subdomain reputation up to it, so `mg.` does not insulate the root and the root
-does not insulate `mg.`
+neither domain is listed on Spamhaus DBL or SURBL.
 
-The load generating that reputation is measurable from the send archive:
+### Google Postmaster Tools, `universityofoptions.com`, 120 days to 2026-08-05
+
+| Metric | Reading |
+| --- | --- |
+| Domain reputation | **High**, flat across the whole window |
+| DKIM / SPF / DMARC | **100%** every day |
+| User-reported spam | ~0%, with brief spikes to 0.5% (Apr 13) and 0.3% (early Aug) |
+| IP reputation | ~50% Medium / 50% High Apr–Jun, **all High from July** |
+
+**This refutes an earlier hypothesis recorded here.** Having seen two
+independently authenticated paths both land in spam, the conclusion drawn was
+that the organizational domain's reputation was impaired and dragging every
+sender under it. Postmaster says otherwise: at Gmail this domain is in the best
+reputation band available, with essentially no spam complaints. The load
+argument below is still worth acting on for its own sake, but it is not
+evidence of a reputation problem, and it does not explain the closers.
+
+Two things follow, and both matter more than the original theory:
+
+1. **Postmaster only reports Gmail.** A domain can read High at Gmail while
+   Outlook, Yahoo or a corporate gateway filters it hard — and the corporate
+   gateways are exactly where the one-click failures clustered
+   (`caduluth.com`, `otcservices.com`, `fairwaymc.com`). Diagnosing the closers
+   means finding out which providers the complaining recipients are on. Gmail
+   has already been cleared.
+2. **The data is sparse.** Every panel carries "Data shown with missing
+   records", and the IP chart has gaps on most days, which is what Postmaster
+   looks like below its ~100 messages/day reporting threshold. So this is a
+   confident reading of a *thin* sample of the root domain's traffic.
+
+The send-volume load, unchanged as an observation:
 
 | Month | Sends | Delivered |
 | --- | ---: | ---: |
@@ -264,14 +290,10 @@ The load generating that reputation is measurable from the send archive:
 | 2026-06 | 23 | 165,617 |
 | 2026-07 | 25 | 167,902 |
 
-~168k/month into a list whose open rate fell 20.6% → 11.15% → 7.67% over the
-same period, and which still holds 11,127 suppressed contacts, 268 spamtraps and
-539 complainers.
-
-**The open-rate collapse and the closers' spam problem are most likely the same
-event.** Copy explains clicks *given* an open; it does not explain opens halving.
-Inbox placement does, and it degrades for every sender under the org domain at
-once.
+~168k/month while the open rate fell 20.6% → 11.15% → 7.67%. Since that volume
+sends as `mg.`, its reputation lives on the **`mg.` Postmaster property**, which
+has not yet been read. Do not attribute the open-rate collapse to placement
+until it has been.
 
 ### ⚠️ Do not move the closers onto `mg.`
 
