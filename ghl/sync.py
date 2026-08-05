@@ -42,6 +42,8 @@ class SyncReport:
     tags_applied: dict[str, int] = field(default_factory=dict)
     already_tagged: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    # Contacts deliberately not tagged because they hold a skip_tag.
+    skipped: dict[str, int] = field(default_factory=dict)
 
 
 def find_contacts_by_email(client: GHLClient, email: str) -> list[dict]:
@@ -55,8 +57,16 @@ def add_tags(client: GHLClient, contact_id: str, tags: list[str]) -> None:
 
 
 def _tag_in(ghl: GHLClient, email: str, wanted: list[str], apply: bool,
-            report: SyncReport, label: str) -> bool:
-    """Tag every record holding this address in one location. True if matched."""
+            report: SyncReport, label: str,
+            skip_tags: set[str] | None = None) -> bool:
+    """Tag every record holding this address in one location. True if matched.
+
+    `skip_tags` are tags whose holders must not be tagged at all. This exists
+    because the sync is idempotent by design and runs on a schedule, so any
+    manual cleanup it does not know about is silently undone on the next run.
+    Current customers were stripped from the 7/30 attendance tags by hand; four
+    hours later the scheduled task would have put every one of them back.
+    """
     try:
         contacts = find_contacts_by_email(ghl, email)
     except GHLError as exc:
@@ -67,6 +77,9 @@ def _tag_in(ghl: GHLClient, email: str, wanted: list[str], apply: bool,
 
     for contact in contacts:
         existing = set(contact.get("tags") or [])
+        if skip_tags and {t.lower() for t in existing} & skip_tags:
+            report.skipped[label] = report.skipped.get(label, 0) + 1
+            continue
         missing = [t for t in wanted if t not in existing]
         for tag in wanted:
             bucket = report.already_tagged if tag in existing else report.tags_applied
@@ -82,7 +95,8 @@ def _tag_in(ghl: GHLClient, email: str, wanted: list[str], apply: bool,
 
 def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int,
          prefix: str, stayed_minutes: int = 0, apply: bool = False,
-         event_finished: bool = True, secondary: GHLClient | None = None) -> SyncReport:
+         event_finished: bool = True, secondary: GHLClient | None = None,
+         skip_tags: list[str] | None = None) -> SyncReport:
     """Pull one session's registrants and mirror them into GHL tags.
 
     With apply=False nothing is written -- the report shows exactly what would
@@ -106,9 +120,10 @@ def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int
                          event_finished=event_finished)
         wanted = [f"{prefix} {SUFFIXES[r]}" for r in roles if r in SUFFIXES]
 
-        hit = _tag_in(ghl, email, wanted, apply, report, "main")
+        skip = {t.lower() for t in (skip_tags or [])}
+        hit = _tag_in(ghl, email, wanted, apply, report, "main", skip)
         if secondary is not None:
-            hit = _tag_in(secondary, email, wanted, apply, report, "sms") or hit
+            hit = _tag_in(secondary, email, wanted, apply, report, "sms", skip) or hit
         if hit:
             report.matched += 1
         else:

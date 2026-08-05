@@ -343,7 +343,8 @@ def _sync_one(client: GHLClient, wj, args) -> None:
 
     rep = syncmod.sync(wj, client, args.webinar_id, args.schedule_id, prefix,
                        stayed_minutes=args.stayed_minutes, apply=args.apply,
-                       event_finished=event_finished, secondary=secondary)
+                       event_finished=event_finished, secondary=secondary,
+                       skip_tags=smstarget.OWNS_PITCHED_PRODUCT)
 
     print(f"  registrants in WebinarJam   {rep.registrants:>7,}")
     print(f"  matched to a GHL contact    {rep.matched:>7,}")
@@ -599,6 +600,49 @@ def cmd_smslist(client: GHLClient, args) -> None:
         print(f"  wrote {len(batch):>4} to {path}")
 
 
+def cmd_untag(client: GHLClient, args) -> None:
+    """Remove a tag from everyone who has since picked up another one.
+
+    The point of this is keeping a campaign audience honest while it runs. A
+    replay-chase list has to shrink as people watch: anyone who converts should
+    drop out of the sends still queued behind them, and the conversion shows up
+    as a tag the WebinarJam sync writes. Run it between sends.
+
+    Contacts are read one at a time rather than trusted from the search result,
+    because GHL's search index lags behind writes -- a contact tagged minutes
+    ago may not show the tag in a search, and pruning off a stale index would
+    leave exactly the people who just converted still in the audience.
+    """
+    targets = [client]
+    labels = ["main"]
+    token, location = os.environ.get("GHL_SMS_API_KEY"), os.environ.get("GHL_SMS_LOCATION_ID")
+    if token and location and not args.main_only:
+        targets.append(GHLClient(token=token, location_id=location))
+        labels.append("sms")
+
+    for label, ghl in zip(labels, targets):
+        holders = list(ghl.search_contacts(
+            [{"field": "tags", "operator": "eq", "value": args.tag}]))
+        removed = 0
+        for row in holders:
+            record = ghl.request("GET", f"/contacts/{row['id']}").get("contact", {})
+            have = {t.lower() for t in (record.get("tags") or [])}
+            if not (have & {t.lower() for t in args.if_tagged}):
+                continue
+            removed += 1
+            if args.apply:
+                try:
+                    ghl.request("DELETE", f"/contacts/{row['id']}/tags",
+                                json={"tags": [args.tag]})
+                except GHLError as exc:
+                    print(f"    failed {row['id']}: {str(exc)[:80]}", file=sys.stderr)
+        verb = "removed" if args.apply else "would remove"
+        print(f"  {label:<5} {len(holders):>6,} hold {args.tag!r}; "
+              f"{verb} {removed:,} who now match")
+    if not args.apply:
+        print("\n  re-run with --apply to write it")
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -701,6 +745,14 @@ def main() -> int:
                    help="re-check an already-tagged list and drop anyone who no "
                         "longer qualifies, instead of selecting new targets")
     p.set_defaults(func=cmd_smslist)
+
+    p = sub.add_parser("untag", help="drop a campaign tag from anyone who has converted")
+    p.add_argument("--tag", required=True, help="tag to remove, e.g. \"8/6 replay lead\"")
+    p.add_argument("--if-tagged", action="append", required=True,
+                   help="remove only from contacts holding this tag (repeat for OR)")
+    p.add_argument("--main-only", action="store_true", help="skip the SMS sub-account")
+    p.add_argument("--apply", action="store_true", help="write it (default is a dry run)")
+    p.set_defaults(func=cmd_untag)
 
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")
