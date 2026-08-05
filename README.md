@@ -236,6 +236,70 @@ the same period. Subject lines carrying a time and a question are what recovered
 it before. `previewText` on each template is now distinct from the subject
 rather than a copy of it, so the inbox line is not wasted repeating itself.
 
+## Deliverability: what is actually set up
+
+Verified from DNS on 2026-08-05, after closers reported their mail landing in
+spam from **both** GHL and Gmail, including emails with no links at all.
+
+| | `universityofoptions.com` | `mg.universityofoptions.com` |
+| --- | --- | --- |
+| MX | Google Workspace | Mailgun |
+| SPF | `include:_spf.google.com ~all` | `include:mailgun.org ~all` |
+| DKIM | `google._domainkey`, 2048-bit | `mailo._domainkey`, **1024-bit** |
+| DMARC | `p=quarantine`, reporting to mxtoolbox | inherits |
+| Sends | closers, 1:1 | all marketing, `From: dan@mg.…` |
+
+**Authentication is not the problem.** Both paths sign and align correctly, and
+neither domain is listed on Spamhaus DBL or SURBL. Two independently
+authenticated paths, different providers, different IPs, both landing in spam,
+leaves one shared factor: the **organizational domain**. Gmail and Microsoft roll
+subdomain reputation up to it, so `mg.` does not insulate the root and the root
+does not insulate `mg.`
+
+The load generating that reputation is measurable from the send archive:
+
+| Month | Sends | Delivered |
+| --- | ---: | ---: |
+| 2026-04 | 28 | 196,506 |
+| 2026-06 | 23 | 165,617 |
+| 2026-07 | 25 | 167,902 |
+
+~168k/month into a list whose open rate fell 20.6% → 11.15% → 7.67% over the
+same period, and which still holds 11,127 suppressed contacts, 268 spamtraps and
+539 complainers.
+
+**The open-rate collapse and the closers' spam problem are most likely the same
+event.** Copy explains clicks *given* an open; it does not explain opens halving.
+Inbox placement does, and it degrades for every sender under the org domain at
+once.
+
+### ⚠️ Do not move the closers onto `mg.`
+
+Three reasons, in order of how quickly they bite:
+
+1. **`mg.` has no inbox.** Its MX points at Mailgun. A closer sending from
+   `@mg.universityofoptions.com` has replies routed to Mailgun's inbound, not
+   their Gmail. They lose replies silently.
+2. `mg.` carries the complaint history of every bulk send. "Warmed" means it can
+   carry volume, not that it is trusted for personal mail.
+3. It inverts the point of the split, which is to keep bulk away from the domain
+   humans converse from.
+
+A closer domain has to be a **separately registered domain**, because reputation
+inherits within an org domain. A new subdomain of `universityofoptions.com`
+inherits the problem it is meant to escape.
+
+### Cheap fixes worth doing regardless
+
+- **The Mailgun DKIM key is 1024-bit.** The Google key on the root is 2048-bit.
+  Google's sender guidelines call for 2048; Mailgun supports it and it is a
+  dashboard toggle plus a DNS record swap.
+- **Check whether Mailgun has this account on a shared IP pool.** At ~168k/month
+  the volume is past the point where a dedicated IP is normally recommended. If
+  the reputation problem is IP-level rather than domain-level, a new domain does
+  not fix it — and that distinction is visible in Google Postmaster Tools, which
+  reports IP and domain reputation separately.
+
 ## Weekly webinar send plan
 
 ```bash
