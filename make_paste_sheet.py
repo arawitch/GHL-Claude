@@ -67,37 +67,70 @@ PAGE = """<!doctype html>
   .urls code {{ display: block; background: #f6f8fa; border: 1px solid #d8dee4;
                 border-radius: 6px; padding: 10px 12px; margin: 6px 0 14px;
                 word-break: break-all; font-size: 12px; }}
+  /* Keep each email whole on one page -- a body split across a page break is
+     unusable as a reference sheet. */
+  @media print {{
+    body {{ padding: 0 0 12px; max-width: none; font-size: 13px; }}
+    .card, .how {{ break-inside: avoid; page-break-inside: avoid; }}
+    .card {{ margin-bottom: 18px; }}
+    a {{ color: #0b5cad; }}
+  }}
 </style>
 
-<h1>Thursday webinar emails &mdash; paste sheet</h1>
-<p class="sub">Rendered from the same source as the code-builder templates, so
-the two versions cannot drift apart.</p>
+<h1>{heading}</h1>
+<p class="sub">{blurb}</p>
 
 <div class="how">
-  <strong>To paste into the classic builder:</strong>
-  <ol>
-    <li>Select the email body below &mdash; from &ldquo;Hey&rdquo; down to the
-        last grey line &mdash; and copy it.</li>
-    <li>Paste into a text block in the classic builder. Links and bold carry
-        over; the merge fields stay as literal text.</li>
-    <li>Copy the subject and preview text from the header into their own fields.</li>
-    <li><strong>Turn tracking off</strong> before scheduling, or the one-click
-        link gets rewritten and mangled.</li>
-    <li>Re-pull the audience so the {registered} people already registered drop out.</li>
-  </ol>
+  <strong>Before these go out:</strong>
+  <ol>{steps}</ol>
 </div>
 
 {cards}
 
-<div class="urls">
-  <p class="label">one-click url &mdash; text link and button</p>
+<div class="urls">{urls}</div>
+"""
+
+THURSDAY_HEAD = ("Thursday webinar emails &mdash; paste sheet",
+ "Rendered from the same source as the code-builder templates, so the two "
+ "versions cannot drift apart.")
+REPLAY_HEAD = ("Replay-chase emails &mdash; 8/6 campaign",
+ "Six sends, Wednesday to Sunday. Subjects are modelled on measured open "
+ "rates: the two best-opening emails in the archive are both replay emails "
+ "(&ldquo;The replay is ready&rdquo; 39.3%, &ldquo;Missed the kickoff?&rdquo; "
+ "37.0%), and every winner states logistics or a deadline rather than a claim.")
+
+COMMON_PASTE = ("<li>Select an email body below &mdash; from &ldquo;Hey&rdquo; to the "
+  "end &mdash; and copy it into a text block. Links and bold carry over; merge "
+  "fields stay literal.</li>"
+  "<li>Copy the subject and preview text from each header into their own fields. "
+  "The preview must stay <em>different</em> from the subject &mdash; repeating it "
+  "wastes the inbox line.</li>")
+
+THURSDAY_STEPS = COMMON_PASTE + (
+  "<li><strong>Turn tracking off</strong>, or the one-click link gets rewritten "
+  "and mangled.</li>"
+  "<li>Re-pull the audience so people who already registered drop out.</li>")
+
+REPLAY_STEPS = (
+  "<li><strong>Replace <code>{{REPLAY_LINK}}</code></strong> in all six with the "
+  "WebinarJam replay URL. Nothing works until this is done.</li>"
+  + COMMON_PASTE +
+  "<li>Audience is the <code>8/6 replay lead</code> tag (11,707) for email, "
+  "<code>8/6 replay lead priority</code> (500) for SMS.</li>"
+  "<li>Between sends, run the sync then <code>untag --if-tagged &quot;7/30 "
+  "replay&quot;</code> so anyone who has watched drops out of what is still queued.</li>")
+
+THURSDAY_URLS = """<p class="label">one-click url &mdash; text link and button</p>
   <code>{one_click}</code>
   <p class="label">fallback url &mdash; small grey line only</p>
   <code>{fallback}</code>
   <p class="label">button</p>
-  <code>background #16a34a &middot; white text &middot; 15px 30px padding &middot; 6px radius</code>
-</div>
-"""
+  <code>background #16a34a &middot; white text &middot; 15px 30px padding &middot; 6px radius</code>"""
+
+REPLAY_URLS = """<p class="label">replace this placeholder everywhere</p>
+  <code>{{REPLAY_LINK}}</code>
+  <p class="label">button</p>
+  <code>background #16a34a &middot; white text &middot; 15px 30px padding &middot; 6px radius &middot; label &ldquo;Watch The Replay&rdquo;</code>"""
 
 CARD = """<div class="card">
   <div class="head">
@@ -140,11 +173,13 @@ def main() -> int:
             body=e["body"],
         ))
 
+    heading, blurb = REPLAY_HEAD if args.replay else THURSDAY_HEAD
+    urls = (REPLAY_URLS if args.replay else
+            THURSDAY_URLS.format(one_click=htmlmod.escape(ONE_CLICK),
+                                 fallback=htmlmod.escape(FALLBACK)))
     Path(args.out).write_text(PAGE.format(
-        cards="\n".join(cards),
-        one_click=htmlmod.escape(ONE_CLICK),
-        fallback=htmlmod.escape(FALLBACK),
-        registered=args.registered,
+        cards="\n".join(cards), heading=heading, blurb=blurb,
+        steps=REPLAY_STEPS if args.replay else THURSDAY_STEPS, urls=urls,
     ), encoding="utf-8")
     print(f"wrote {args.out} ({len(keys)} email(s))")
     return 0
