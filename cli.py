@@ -600,6 +600,27 @@ def cmd_smslist(client: GHLClient, args) -> None:
         print(f"  wrote {len(batch):>4} to {path}")
 
 
+def cmd_mirror_tag(client: GHLClient, args) -> None:
+    """Copy a tag's membership from the main location into the SMS sub-account."""
+    token, location = os.environ.get("GHL_SMS_API_KEY"), os.environ.get("GHL_SMS_LOCATION_ID")
+    if not token or not location:
+        print("GHL_SMS_API_KEY and GHL_SMS_LOCATION_ID must be set", file=sys.stderr)
+        return
+    sms = GHLClient(token=token, location_id=location)
+    print(f"  mirroring {args.tag!r} -> SMS location as "
+          f"{(args.rename or args.tag)!r}", file=sys.stderr)
+    c = syncmod.mirror_tag(client, sms, args.tag, args.apply, args.rename)
+    verb = "tagged" if args.apply else "would tag"
+    print(f"\n  {c['source']:,} hold the tag in the main location")
+    print(f"  {verb} {c['tagged']:,} in the SMS location")
+    print(f"  {c['already']:,} already had it")
+    print(f"  {c['no_match']:,} have no record in the SMS location (not created)")
+    if c["failed"]:
+        print(f"  {c['failed']:,} writes failed")
+    if not args.apply:
+        print("\n  re-run with --apply to write it")
+
+
 def cmd_untag(client: GHLClient, args) -> None:
     """Remove a tag from everyone who has since picked up another one.
 
@@ -745,6 +766,12 @@ def main() -> int:
                    help="re-check an already-tagged list and drop anyone who no "
                         "longer qualifies, instead of selecting new targets")
     p.set_defaults(func=cmd_smslist)
+
+    p = sub.add_parser("mirror-tag", help="copy a tag's membership into the SMS sub-account")
+    p.add_argument("--tag", required=True, help='tag to copy, e.g. "clicked 7/31 replay"')
+    p.add_argument("--rename", help="use a different tag name in the target location")
+    p.add_argument("--apply", action="store_true", help="write it (default is a dry run)")
+    p.set_defaults(func=cmd_mirror_tag)
 
     p = sub.add_parser("untag", help="drop a campaign tag from anyone who has converted")
     p.add_argument("--tag", required=True, help="tag to remove, e.g. \"8/6 replay lead\"")

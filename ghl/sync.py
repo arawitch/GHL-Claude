@@ -93,6 +93,57 @@ def _tag_in(ghl: GHLClient, email: str, wanted: list[str], apply: bool,
     return True
 
 
+def mirror_tag(source: GHLClient, target: GHLClient, tag: str, apply: bool,
+               new_name: str | None = None) -> dict[str, int]:
+    """Copy a tag's membership from one location into another.
+
+    Sub-accounts hold separate contact databases, so a tag applied in one is
+    invisible in the other. Matching is by email first and phone second: contact
+    ids are per-location and never line up, and the same person can hold more
+    than one record in either location, so every match is tagged rather than
+    just the first.
+
+    Nothing is created. A contact with no record in the target is reported, not
+    invented -- inventing one would put a contact into SMS campaigns that has
+    never been through the target location's consent flow.
+    """
+    counts = {"source": 0, "tagged": 0, "already": 0, "no_match": 0, "failed": 0}
+    want = new_name or tag
+    for contact in source.search_contacts(
+            [{"field": "tags", "operator": "eq", "value": tag}]):
+        counts["source"] += 1
+        email = (contact.get("email") or "").strip()
+        phone = (contact.get("phone") or "").strip()
+        matches: list[dict] = []
+        for field, value in (("email", email), ("phone", phone)):
+            if not value:
+                continue
+            try:
+                matches = list(target.search_contacts(
+                    [{"field": field, "operator": "eq", "value": value}],
+                    page_limit=20, max_records=20))
+            except GHLError:
+                matches = []
+            if matches:
+                break
+        if not matches:
+            counts["no_match"] += 1
+            continue
+        for row in matches:
+            if want in (row.get("tags") or []):
+                counts["already"] += 1
+                continue
+            if not apply:
+                counts["tagged"] += 1
+                continue
+            try:
+                add_tags(target, row["id"], [want])
+                counts["tagged"] += 1
+            except GHLError:
+                counts["failed"] += 1
+    return counts
+
+
 def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int,
          prefix: str, stayed_minutes: int = 0, apply: bool = False,
          event_finished: bool = True, secondary: GHLClient | None = None,

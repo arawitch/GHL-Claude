@@ -22,13 +22,16 @@ from pathlib import Path
 
 from build_week1_templates import EMAILS, ONE_CLICK, FALLBACK
 from build_replay_emails import EMAILS as REPLAY_EMAILS
+from build_followup_emails import (EMAILS as FOLLOWUP_EMAILS, EXIT_CONDITIONS,
+                                   CTA as FOLLOWUP_CTA, segments as sms_segments)
 
-EMAILS = EMAILS + REPLAY_EMAILS
-SEND_TIMES_EXTRA = {e["key"]: e["send"] for e in REPLAY_EMAILS}
+EMAILS = EMAILS + REPLAY_EMAILS + FOLLOWUP_EMAILS
+SEND_TIMES_EXTRA = {e["key"]: e["send"] for e in REPLAY_EMAILS + FOLLOWUP_EMAILS}
 
 THURSDAY = ["W1-A4-Thu8am-NotReg", "W1-A5-ThuNoon-NotReg", "W1-A6-Thu145-NotReg"]
 REPLAY = ["R1-Wed-ReplayReady", "R2-Thu-MissedIt", "R3-Fri-ComingDown",
           "R4-Sat-OneIdea", "R5-Sun-LastCall", "R6-Sun-FinalHours"]
+FOLLOWUP = [e["key"] for e in FOLLOWUP_EMAILS]
 
 SEND_TIMES = {
     "W1-A4-Thu8am-NotReg": "Thursday 8:00 AM PT",
@@ -132,6 +135,30 @@ REPLAY_URLS = """<p class="label">replace this placeholder everywhere</p>
   <p class="label">button</p>
   <code>background #16a34a &middot; white text &middot; 15px 30px padding &middot; 6px radius &middot; label &ldquo;Watch The Replay&rdquo;</code>"""
 
+FOLLOWUP_HEAD = ("Replay-click follow-up &mdash; email + SMS",
+ "Five days, Thursday to Sunday evening, to the 81 contacts tagged "
+ "<code>clicked 7/31 replay</code> in both sub-accounts. Deadline is Sunday "
+ "midnight. Emails are live in GoHighLevel as RC1&ndash;RC5; the SMS bodies "
+ "have to be pasted in by hand, because the API has no snippet or "
+ "SMS-template endpoint.")
+
+FOLLOWUP_STEPS = (
+  "<li><strong>Verify the trigger link first.</strong> "
+  "<code>l5C7oQ9aKzxO8oti1sfr</code> is not among the 79 trigger links in the "
+  "main location, so every CTA in this campaign resolves to nothing until that "
+  "is fixed. Check the SMS sub-account, or create it and swap the id.</li>"
+  "<li>Emails RC1&ndash;RC5 are already built. Paste each <strong>SMS</strong> "
+  "body into its workflow step from the block under each email.</li>"
+  "<li>Set the two exit conditions below, or a buyer keeps getting deadline "
+  "pressure after paying.</li>")
+
+FOLLOWUP_URLS = """<p class="label">CTA used in every message</p>
+  <code>{cta}</code>
+  <p class="label">workflow exit conditions &mdash; set these in the UI</p>
+  <code>""" + " &nbsp;|&nbsp; ".join(EXIT_CONDITIONS) + """</code>
+  <p class="label">button</p>
+  <code>background #16a34a &middot; white text &middot; 15px 30px padding &middot; 6px radius</code>"""
+
 CARD = """<div class="card">
   <div class="head">
     <div class="when">{when}</div>
@@ -139,6 +166,15 @@ CARD = """<div class="card">
     <div class="field"><b>Preview</b> <span class="val">{preview}</span></div>
   </div>
   <div class="bodywrap">{body}</div>
+  {extra}
+</div>"""
+
+EXTRA = """<div style="border-top:1px solid #d8dee4;background:#fbfcfd;padding:12px 18px;font-size:14px;">
+  <p class="label" style="margin-top:0;">SMS &mdash; paste into the workflow step ({chars} chars, {segs} segments)</p>
+  <div style="background:#fff;border:1px solid #d8dee4;border-radius:6px;padding:10px 12px;
+              white-space:pre-wrap;font-size:14px;">{sms}</div>
+  <p class="label">subject alternates for A/B</p>
+  <div style="font-size:13px;color:#555;">{alts}</div>
 </div>"""
 
 
@@ -147,13 +183,16 @@ def main() -> int:
     ap.add_argument("--key", action="append", help="template key (repeatable)")
     ap.add_argument("--thursday", action="store_true", help="the three Thursday sends")
     ap.add_argument("--replay", action="store_true", help="the six replay-chase sends")
+    ap.add_argument("--followup", action="store_true", help="the replay-click follow-up campaign")
     ap.add_argument("--registered", type=int, default=51,
                     help="how many are already registered, for the reminder")
     ap.add_argument("--out", default="paste-sheet.html")
     args = ap.parse_args()
 
     keys = list(args.key or [])
-    if args.replay:
+    if args.followup:
+        keys = FOLLOWUP
+    elif args.replay:
         keys = REPLAY
     elif args.thursday or not keys:
         keys = THURSDAY
@@ -171,15 +210,25 @@ def main() -> int:
             subject=htmlmod.escape(e["subject"]),
             preview=htmlmod.escape(e.get("preview", "")),
             body=e["body"],
+            extra=("" if "sms" not in e else EXTRA.format(
+                sms=htmlmod.escape(e["sms"]),
+                chars=sms_segments(e["sms"])[0], segs=sms_segments(e["sms"])[1],
+                alts=" &nbsp;&middot;&nbsp; ".join(htmlmod.escape(a)
+                                                  for a in e.get("alternates", [])) or "&mdash;")),
         ))
 
-    heading, blurb = REPLAY_HEAD if args.replay else THURSDAY_HEAD
-    urls = (REPLAY_URLS if args.replay else
-            THURSDAY_URLS.format(one_click=htmlmod.escape(ONE_CLICK),
-                                 fallback=htmlmod.escape(FALLBACK)))
+    if args.followup:
+        heading, blurb, steps = FOLLOWUP_HEAD[0], FOLLOWUP_HEAD[1], FOLLOWUP_STEPS
+        urls = FOLLOWUP_URLS.format(cta=htmlmod.escape(FOLLOWUP_CTA))
+    elif args.replay:
+        heading, blurb, steps, urls = REPLAY_HEAD[0], REPLAY_HEAD[1], REPLAY_STEPS, REPLAY_URLS
+    else:
+        heading, blurb, steps = THURSDAY_HEAD[0], THURSDAY_HEAD[1], THURSDAY_STEPS
+        urls = THURSDAY_URLS.format(one_click=htmlmod.escape(ONE_CLICK),
+                                    fallback=htmlmod.escape(FALLBACK))
     Path(args.out).write_text(PAGE.format(
         cards="\n".join(cards), heading=heading, blurb=blurb,
-        steps=REPLAY_STEPS if args.replay else THURSDAY_STEPS, urls=urls,
+        steps=steps, urls=urls,
     ), encoding="utf-8")
     print(f"wrote {args.out} ({len(keys)} email(s))")
     return 0
