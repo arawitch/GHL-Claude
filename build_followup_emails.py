@@ -31,6 +31,7 @@ available, and the alternates are kept for A/B testing rather than discarded.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -235,6 +236,9 @@ def patch(client: GHLClient, tid: str, item: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--sms-location", action="store_true",
+                    help="build in the TEXT sub-account, which is where this "
+                         "campaign sends from")
     args = ap.parse_args()
 
     if not args.apply:
@@ -250,8 +254,30 @@ def main() -> int:
         print("\nchars/segs are for the SMS body, which the API cannot create.")
         return 0
 
-    client = GHLClient()
-    existing = {t.get("name"): t["id"] for t in client.email_templates(limit=100)}
+    if args.sms_location:
+        token, location = os.environ.get("GHL_SMS_API_KEY"), os.environ.get("GHL_SMS_LOCATION_ID")
+        if not token or not location:
+            print("GHL_SMS_API_KEY and GHL_SMS_LOCATION_ID must be set", file=sys.stderr)
+            return 1
+        client = GHLClient(token=token, location_id=location)
+    else:
+        client = GHLClient()
+    try:
+        existing = {t.get("name"): t["id"] for t in client.email_templates(limit=100)}
+    except GHLError as exc:
+        if "not authorized for this scope" in str(exc):
+            # The TEXT sub-account token ships with contacts scope only. The
+            # campaign sends from that location, so the templates have to live
+            # there -- but they cannot be written until the scope is widened.
+            print("This token cannot read or write email templates.\n"
+                  "Add these scopes to the private integration token for this\n"
+                  "location, then re-run:\n"
+                  "    emails/builder.readonly\n"
+                  "    emails/builder.write\n"
+                  "    links.readonly        (to verify the trigger link)",
+                  file=sys.stderr)
+            return 1
+        raise
     for e in EMAILS:
         try:
             tid = existing.get(e["key"])
