@@ -322,6 +322,57 @@ inherits the problem it is meant to escape.
   not fix it — and that distinction is visible in Google Postmaster Tools, which
   reports IP and domain reputation separately.
 
+## Campaign audiences
+
+Two builders, and the difference between them is the point.
+
+| Module | Ranks by | Because the ask is |
+| --- | --- | --- |
+| `ghl/replaylead.py` | click behaviour, then opens | a click on a replay link |
+| `ghl/chartlead.py` | **how recently they attended a webinar**, then clicks | attending a webinar |
+
+Tier order should follow the action being requested. Ranking a replay chase by
+attendance, or a webinar invite by clicks, puts the wrong people at the top.
+
+### Attendance tags are the only real recency signal here
+
+Engagement tags carry no timestamp, and `dateUpdated` is not a substitute: a
+bulk send or a tagging run rewrites it across the whole list. On 2026-08-05 a
+60-day and a 90-day window returned an identical **11,212** for that reason.
+
+Attendance tags are dated *by name* -- `7/30 attended`, `attended 6-29`,
+`3/12 attended` -- so they record when someone actually turned up, and no amount
+of later sending overwrites it. `chartlead.py` groups them into recent / this
+year / older, and puts undated tags (`everwebinar attended` and friends) in the
+oldest tier rather than guessing them into a recent one.
+
+### Exclusions follow the funnel, not a flat customer rule
+
+The ladder is indicators → setup call → bots → Options Navigator, so anyone
+holding *any* rung is excluded -- that is `OWNS_PITCHED_PRODUCT`. Front-end
+buyers (`njc frontend buyer`, `purchased workshop`, `prop bootcamp member`, the
+futures purchases) are kept deliberately: they have paid before and own no
+indicator package, which makes them among the strongest names on the list. See
+`smstarget.py` for the split and why `cancelled masters program` counts as a
+former rather than current customer.
+
+Built 2026-08-05 for the chart-makeover webinar:
+
+| Tier | Count |
+| --- | ---: |
+| 1 attended recently + clicked | 25 |
+| 2 attended recently | 26 |
+| 3 attended this year + clicked | 126 |
+| 4 attended this year | 81 |
+| 5 attended, older or undated | 477 |
+| 6 registered but never attended | 1,637 |
+| **tiers 1-6, tagged `chart makeover invite`** | **2,372** |
+| 7-8 email engagement, no webinar history | 9,395 |
+
+Tiers 7-8 exist in the export but are not tagged. Given ~168k sends/month
+against an 8% open rate, expanding into people with no webinar history at all
+should be a deliberate decision rather than a default.
+
 ## Weekly webinar send plan
 
 ```bash
