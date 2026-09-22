@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import sys
 from pathlib import Path
 
 from ghl.client import GHLClient, GHLError, GHLScopeError
-from ghl import segments, sending, reactivation, weekly, rollout
+from ghl import segments, sending, reactivation, weekly, rollout, campaigns
 
 
 def scoped(fn, fmt=lambda v: f"{v:,}"):
@@ -295,6 +296,70 @@ def cmd_rollout(client: GHLClient, args) -> None:
     print(f"  wrote {written:,} recipients to {out}")
 
 
+def cmd_campaigns(client: GHLClient, args) -> int | None:
+    since = None
+    if args.since:
+        since = datetime.datetime.strptime(args.since, "%Y-%m-%d")
+    print(f"collecting sends >= {args.min_recipients:,} recipients"
+          + (f" since {args.since}" if args.since else "") + " ...", file=sys.stderr)
+    sends = campaigns.bulk_sends(client, since=since, min_recipients=args.min_recipients)
+    if not sends:
+        print("no sends matched those filters")
+        return 0
+
+    stale = [s for s in sends if not campaigns.has_usable_counters(s)]
+    print(f"{len(sends):,} bulk send(s); fetching statistics ...", file=sys.stderr)
+    try:
+        rows = campaigns.build_rows(client, sends)
+    except GHLScopeError as exc:
+        print(f"error: {exc}\n", file=sys.stderr)
+        print("       Adding a scope to a GoHighLevel private integration does not widen\n"
+              "       a token that already exists. Regenerate the token after saving the\n"
+              "       scope and put the new pit-... value in GHL_API_KEY.", file=sys.stderr)
+        return 1
+
+    ranked = campaigns.rank(rows, by=args.by, top=args.top)
+    if not ranked:
+        print(f"statistics returned no usable {args.by} for any send.")
+        failed = [r for r in rows if r["error"]]
+        if failed:
+            print(f"  {len(failed)} of {len(rows)} lookups errored, e.g. {failed[0]['error']}")
+        return 1
+
+    label = {"open_rate": "open rate", "click_rate": "click rate",
+             "cto_rate": "click-to-open"}[args.by]
+    print(f"\nTOP {len(ranked)} BULK EMAILS BY {label.upper()}")
+    print("=" * 96)
+    print(f"  {'#':<3}{'date':<12}{'open':>7}{'click':>7}{'CTO':>7}{'delivered':>11}  subject")
+    print("-" * 96)
+    for i, r in enumerate(ranked, 1):
+        def pct(key):
+            return f"{r[key]:.1f}%" if r.get(key) is not None else "  -  "
+        date = r["date"].strftime("%Y-%m-%d") if r["date"] else "?"
+        print(f"  {i:<3}{date:<12}{pct('open_rate'):>7}{pct('click_rate'):>7}"
+              f"{pct('cto_rate'):>7}{r['delivered']:>11,}  {str(r['subject'])[:44]}")
+    print("-" * 96)
+    if stale:
+        print(f"  note: {len(stale)} send(s) in range predate the v2 counters and may "
+              f"under-report", file=sys.stderr)
+
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cols = ["date", "name", "subject", "recipients", "delivered", "opens", "clicks",
+                "open_rate", "click_rate", "cto_rate", "bounces", "unsubscribes",
+                "complaints", "counters_usable", "error"]
+        with out.open("w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            for r in campaigns.rank(rows, by=args.by):
+                row = dict(r)
+                row["date"] = r["date"].strftime("%Y-%m-%d") if r["date"] else ""
+                w.writerow(row)
+        print(f"  wrote full ranking to {out}")
+    return 0
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -361,6 +426,16 @@ def main() -> int:
     p.add_argument("--out", help="CSV output path; omit to just print the count")
     p.add_argument("--limit", type=int)
     p.set_defaults(func=cmd_sendlist)
+
+    p = sub.add_parser("campaigns")
+    p.add_argument("--since", help="only sends on/after this ISO date, e.g. 2025-11-01")
+    p.add_argument("--min-recipients", type=int, default=campaigns.BULK_MIN_RECIPIENTS,
+                   help=f"ignore sends below this size (default {campaigns.BULK_MIN_RECIPIENTS:,})")
+    p.add_argument("--top", type=int, default=10)
+    p.add_argument("--by", choices=["open_rate", "click_rate", "cto_rate"],
+                   default="open_rate", help="metric to rank on")
+    p.add_argument("--out", help="CSV path for the full ranking")
+    p.set_defaults(func=cmd_campaigns)
 
     p = sub.add_parser("count"); add_filter_args(p); p.set_defaults(func=cmd_count)
 

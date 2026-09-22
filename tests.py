@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 import types
 
-from ghl import reactivation, segments, sending, weekly
+from ghl import campaigns, reactivation, segments, sending, weekly
 from ghl.client import GHLClient, GHLError, GHLScopeError
 
 FAILURES: list[str] = []
@@ -219,6 +219,77 @@ def test_all_of_flattens_nested_lists() -> None:
           len(segments.mailable({"a": 1})[0]["filters"]) == 1 + len(segments.MAILABLE))
 
 
+# -- campaign ranking ----------------------------------------------------
+
+def test_metric_extraction_is_shape_tolerant() -> None:
+    """The statistics response shape is undocumented, so extraction must adapt."""
+    print("\ncampaign metrics")
+    shapes = [
+        {"delivered": 100, "uniqueOpens": 40, "uniqueClicks": 10},
+        {"stats": {"delivered": 100, "opened": 40, "clicked": 10}},
+        {"data": [{"totalDelivered": 100, "opens": 40, "clicks": 10}]},
+        {"result": {"nested": {"deliveredCount": 100, "openCount": 40, "clickCount": 10}}},
+    ]
+    for i, shape in enumerate(shapes):
+        m = campaigns.extract_metrics(shape)
+        check(f"shape {i} yields delivered/opens/clicks",
+              (m.get("delivered"), m.get("opens"), m.get("clicks")) == (100, 40, 10),
+              f"got {m}")
+
+    check("unique counts win over totals",
+          campaigns.extract_metrics({"uniqueOpens": 40, "totalOpens": 90})["opens"] == 40,
+          "a rate built on total opens can exceed 100% and is not comparable")
+    check("booleans are not mistaken for counters",
+          "opens" not in campaigns.extract_metrics({"opened": True}))
+    check("an empty payload yields no metrics", campaigns.extract_metrics({}) == {})
+
+
+def test_ranking_excludes_rather_than_zeroes_missing_data() -> None:
+    print("\ncampaign ranking")
+    rows = [
+        {"subject": "a", "open_rate": 30.0},
+        {"subject": "b", "open_rate": 55.0},
+        {"subject": "c", "open_rate": None},
+        {"subject": "d", "open_rate": 12.0},
+    ]
+    ranked = campaigns.rank(rows, by="open_rate")
+    check("ordered high to low", [r["subject"] for r in ranked] == ["b", "a", "d"])
+    check("a send with no data is dropped, not ranked last",
+          "c" not in [r["subject"] for r in ranked],
+          "absent data and zero engagement are different findings")
+    check("top truncates", len(campaigns.rank(rows, by="open_rate", top=2)) == 2)
+
+
+def test_zero_delivery_does_not_crash_or_flatter() -> None:
+    """Nov-Dec 2025 has real sends with 0 delivered; they must not divide by zero."""
+    print("\nzero-delivery sends")
+
+    class Stub:
+        def get(self, path, **kw):
+            if path.endswith("/statistics"):
+                return {"delivered": 0, "opened": 0, "clicked": 0}
+            raise AssertionError(path)
+
+    sched = [{"id": "x", "name": "n", "subject": "s", "totalCount": 40000,
+              "successCount": 0, "processed": 40000, "bulkActionVersion": "v2",
+              "dateScheduled": 1762000000000}]
+    rows = campaigns.build_rows(Stub(), sched)
+    check("open_rate is None, not 0.0, when nothing was delivered",
+          rows[0]["open_rate"] is None)
+    check("such a send is excluded from the ranking",
+          campaigns.rank(rows, by="open_rate") == [])
+
+
+def test_bulk_threshold_and_counter_flag() -> None:
+    print("\nbulk filtering")
+    check("default bulk threshold is 3,000", campaigns.BULK_MIN_RECIPIENTS == 3000)
+    v1 = {"bulkActionVersion": "v1", "processed": 0, "queuedCount": 6916}
+    v2 = {"bulkActionVersion": "v2", "processed": 47746}
+    check("v1 records are flagged as unusable", campaigns.has_usable_counters(v1) is False)
+    check("v2 records with processed counts are usable",
+          campaigns.has_usable_counters(v2) is True)
+
+
 def main() -> int:
     for fn in [test_401_is_two_different_errors,
                test_email_dnd_covers_every_on_status,
@@ -227,7 +298,11 @@ def main() -> int:
                test_plan_surfaces_failures,
                test_track_b_excludes_registrants,
                test_export_columns_cannot_be_reimported_as_tags,
-               test_all_of_flattens_nested_lists]:
+               test_all_of_flattens_nested_lists,
+               test_metric_extraction_is_shape_tolerant,
+               test_ranking_excludes_rather_than_zeroes_missing_data,
+               test_zero_delivery_does_not_crash_or_flatter,
+               test_bulk_threshold_and_counter_flag]:
         fn()
     print()
     if FAILURES:
