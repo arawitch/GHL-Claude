@@ -14,12 +14,25 @@ from .client import GHLClient
 from .segments import MAILABLE, all_of, has_tag
 
 # Tags that must never receive marketing email, discovered by auditing the
-# location's 544 tags. Ordered roughly by how much damage a send would do.
+# location's tags. Ordered roughly by how much damage a send would do.
+#
+# This list does not update itself, and the gap is not theoretical: an audit on
+# 2026-09-28 found 321 contacts inside the "engaged" segment carrying
+# hardbounced, verified bad, bad data or email unsub -- none of which were
+# listed here, so every send was reaching them. "verified bad" is the ZeroBounce
+# verdict, so those were addresses already paid to have identified as dead.
+#
+# Deliberately NOT suppressed: "bad timing" is a sales-stage tag meaning "not
+# ready to buy", not "do not contact".
 SUPPRESSION_TAGS = [
     "spamtrap",        # sending here is the fastest route to a blocklist
     "complainer",      # previously hit "report spam"
     "never send",      # largest single suppression set in UOO
     "do not email",    # explicit opt-out, not reflected in the DND flag
+    "email unsub",     # unsubscribed; separate tag from "do not email"
+    "hardbounced",     # mailbox does not exist -- survives a domain change
+    "verified bad",    # ZeroBounce verdict: invalid / abuse / spamtrap
+    "bad data",        # unusable address recorded by staff
     "soft bounce",
     "remove tag",
     "remove from bootcamp",
