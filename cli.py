@@ -379,17 +379,32 @@ def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> None:
                        stayed_minutes=args.stayed_minutes, apply=args.apply,
                        event_finished=event_finished, secondary=secondary,
                        schedule_contains=args.schedule_text,
+                       create_missing=args.create,
                        skip_tags=(smstarget.OWNS_PITCHED_PRODUCT
                                   if not args.include_customers else None))
 
     print(f"  registrants in WebinarJam   {rep.registrants:>7,}")
     print(f"  matched to a GHL contact    {rep.matched:>7,}")
     print(f"  no GHL contact found        {len(rep.unmatched):>7,}")
+    if rep.created:
+        print(f"  contacts created            {rep.created:>7,}")
+    if rep.matched_by_duplicate:
+        print(f"  found via duplicate check   {rep.matched_by_duplicate:>7,}"
+              "   (existed under another address or number)")
+    if rep.skipped:
+        owned = sum(rep.skipped.values())
+        print(f"  attendance recorded, no 'prospect' tag (already owns it)"
+              f" {owned:>7,}")
     if rep.tags_applied or rep.already_tagged:
         print(f"\n  {'tag':<28}{'to apply':>10}{'already':>10}")
         print("  " + "-" * 48)
         for tag in sorted(set(rep.tags_applied) | set(rep.already_tagged)):
             print(f"  {tag:<28}{rep.tags_applied.get(tag,0):>10,}{rep.already_tagged.get(tag,0):>10,}")
+    if rep.tags_removed:
+        print(f"\n  stale tags removed (this run's data contradicts them)")
+        print("  " + "-" * 48)
+        for tag in sorted(rep.tags_removed):
+            print(f"  {tag:<40}{rep.tags_removed[tag]:>8,}")
     if rep.unmatched:
         print(f"\n  unmatched addresses (first 10):")
         for e in rep.unmatched[:10]:
@@ -779,7 +794,10 @@ def main() -> int:
                         "e.g. '1 Oct 2026' -- a live webinar id spans every "
                         "session ever run under it")
     p.add_argument("--include-customers", action="store_true",
-                   help="also tag people who already own what the webinar sells")
+                   help="also give owners the '<prefix> prospect' tag")
+    p.add_argument("--create", action="store_true",
+                   help="create a contact for any registrant who has none, so "
+                        "evergreen traffic from outside GHL is followable")
     p.add_argument("--apply", action="store_true", help="write tags (default is a dry run)")
     p.set_defaults(func=cmd_sync_webinar)
 
