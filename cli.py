@@ -267,7 +267,7 @@ def _relevant_schedules(wj, webinar_id, window_days):
     return sorted(out, key=lambda x: x[1])
 
 
-def cmd_sync_webinar(client: GHLClient, args) -> None:
+def cmd_sync_webinar(client: GHLClient, args) -> int:
     wj = WebinarJamClient(product=args.product)
 
     if not args.list and args.webinar_id is None:
@@ -287,8 +287,7 @@ def cmd_sync_webinar(client: GHLClient, args) -> None:
     # been through. The whole has_run / settle-minutes path below is therefore
     # skipped for it rather than given a fake schedule id.
     if wj.evergreen:
-        _sync_one(client, wj, args, evergreen=True)
-        return
+        return _sync_one(client, wj, args, evergreen=True)
 
     if args.auto:
         found = _relevant_schedules(wj, args.webinar_id, args.window_days)
@@ -296,12 +295,13 @@ def cmd_sync_webinar(client: GHLClient, args) -> None:
             print(f"no session within {args.window_days} days of now - nothing to sync")
             return
         print(f"auto: {len(found)} session(s) within {args.window_days} days\n")
+        worst = 0
         for sched, when in found:
             args.schedule_id = sched
             args.prefix = None
-            _sync_one(client, wj, args)
+            worst = _sync_one(client, wj, args) or worst
             print()
-        return
+        return worst
 
     if not args.schedule_id:
         print(f"schedules for webinar {args.webinar_id}:")
@@ -313,7 +313,7 @@ def cmd_sync_webinar(client: GHLClient, args) -> None:
     _sync_one(client, wj, args)
 
 
-def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> None:
+def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> int:
 
     # Attendance roles are meaningless until the session has run: WebinarJam
     # reports attended_live as "No" for everyone beforehand. has_run() compares
@@ -413,6 +413,16 @@ def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> None:
         print(f"\n  {len(rep.errors)} error(s):")
         for e in rep.errors[:5]:
             print(f"    {e}")
+        # A token without contacts.write fails every write with
+        # 401 "Invalid Private Integration token" -- the same body the client
+        # treats as a transient blip, so it retries, gives up, logs, and the
+        # command used to still exit 0. A scheduled run then reported success
+        # while nothing was written: the EMAIL sub-account sat days stale while
+        # the SMS one, whose token could write, stayed current.
+        if sum("Invalid Private Integration token" in e for e in rep.errors) > 2:
+            print("\n  Every failure above is an auth rejection. The most likely"
+                  "\n  cause is a token without contacts.write -- check"
+                  "\n  GHL_API_KEY, not the API.", file=sys.stderr)
 
     if args.apply:
         print("\n  RECONCILIATION (GHL tag counts vs this session)")
@@ -422,6 +432,10 @@ def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> None:
             print(f"  {tag:<28}{expected:>8,} expected{actual:>8,} in GHL{flag}")
     else:
         print("\n  re-run with --apply to write these tags")
+
+    # Exit non-zero on any failure. Without this a scheduled run is green
+    # whether it wrote everything or nothing.
+    return 1 if rep.errors else 0
 
 
 def cmd_register(client: GHLClient, args) -> None:
@@ -871,7 +885,10 @@ def main() -> int:
 
     args = parser.parse_args()
     try:
-        args.func(GHLClient(), args)
+        # `or 0` because most commands return None; the ones that can partly
+        # fail return a status, and dropping it is how a scheduled run reports
+        # success having written nothing.
+        return args.func(GHLClient(), args) or 0
     except GHLError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
