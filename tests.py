@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 import types
 
-from ghl import campaigns, reactivation, segments, sending, smstarget, weekly
+from ghl import campaigns, reactivation, segments, sending, smstarget, sync, weekly
 from ghl import webinarjam
 from ghl.client import GHLClient, GHLError, GHLScopeError
 
@@ -358,6 +358,111 @@ def test_phone_normalisation_rejects_junk_and_fixes_double_country_code():
           f({"phone_country_code": "+44", "phone_number": "7932149848"}) == "+447932149848")
 
 
+class _FakeGHL:
+    """A contact database small enough to assert against."""
+
+    def __init__(self, tags_by_email: dict[str, list[str]]):
+        self.db = {e: {"id": f"id-{e}", "tags": list(t)}
+                   for e, t in tags_by_email.items()}
+        self.location_id = "loc"
+        self.added: list[tuple[str, list[str]]] = []
+        self.removed: list[tuple[str, list[str]]] = []
+        self.created: list[dict] = []
+
+    def search_contacts(self, filters=None, **kw):
+        want = filters[0]["value"]
+        return [self.db[want]] if want in self.db else []
+
+    def request(self, method, path, json=None, **kw):
+        if path == "/contacts/":
+            self.created.append(json)
+            return {"contact": {"id": "new"}}
+        cid = path.split("/")[2]
+        (self.added if method == "POST" else self.removed).append((cid, json["tags"]))
+        return {}
+
+
+def test_contradictory_state_tags_are_cleared():
+    """An evergreen room reuses one namespace, so tags must be re-asserted.
+
+    marka797@gmail.com registered again having attended nothing, and still
+    carried "everwebinar attended" and "everwebinar replay" from an earlier
+    session -- the tags said he both attended and did not.
+    """
+    print("\nattendance state is re-asserted, not accumulated")
+    ghl = _FakeGHL({"m@x.com": ["everwebinar attended", "everwebinar replay",
+                                "everwebinar register", "10/1 attended"]})
+    rep = sync.SyncReport()
+    sync._tag_in(ghl, "m@x.com", ["everwebinar register", "everwebinar absent"],
+                 True, rep, "main",
+                 stale_tags=["everwebinar attended", "everwebinar replay"])
+    removed = sorted(t for _, tags in ghl.removed for t in tags)
+    check("the contradicted tags come off",
+          removed == ["everwebinar attended", "everwebinar replay"], str(removed))
+    check("another event's tags are untouched",
+          "10/1 attended" not in removed, str(removed))
+    added = sorted(t for _, tags in ghl.added for t in tags)
+    check("the true state goes on", "everwebinar absent" in added, str(added))
+
+
+def test_owners_are_recorded_but_not_prospected():
+    """jmacfarlane watched 38 minutes and was tagged nothing, holding "uoo member".
+
+    Recording what happened and deciding who to sell to are separate jobs.
+    """
+    print("\nownership withholds the prospect tag, not the record")
+    owner = _FakeGHL({"o@x.com": ["uoo member"]})
+    rep = sync.SyncReport()
+    sync._tag_in(owner, "o@x.com", ["everwebinar attended"], True, rep, "main",
+                 owner_tags={"uoo member"}, prospect_tag="everwebinar prospect")
+    added = sorted(t for _, tags in owner.added for t in tags)
+    check("an owner still gets the attendance tag",
+          added == ["everwebinar attended"], str(added))
+    check("and is counted as skipped for prospecting", rep.skipped.get("main") == 1)
+
+    lead = _FakeGHL({"l@x.com": []})
+    rep2 = sync.SyncReport()
+    sync._tag_in(lead, "l@x.com", ["everwebinar attended"], True, rep2, "main",
+                 owner_tags={"uoo member"}, prospect_tag="everwebinar prospect")
+    added2 = sorted(t for _, tags in lead.added for t in tags)
+    check("a non-owner gets both",
+          added2 == ["everwebinar attended", "everwebinar prospect"], str(added2))
+
+
+def test_missing_registrants_are_created_only_when_asked():
+    """Two evergreen registrants who watched 29:55 and 14:30 had no record."""
+    print("\ncreating contacts for registrants GHL has never seen")
+    row = {"first_name": "K", "last_name": "W", "phone_country_code": "+1",
+           "phone_number": "7274123088"}
+    off = _FakeGHL({})
+    rep = sync.SyncReport()
+    hit = sync._tag_in(off, "new@x.com", ["everwebinar attended"], True, rep,
+                       "main", row=row, create_missing=False)
+    check("without the flag nothing is created and the miss is reported",
+          not hit and not off.created)
+
+    on = _FakeGHL({})
+    rep2 = sync.SyncReport()
+    hit2 = sync._tag_in(on, "new@x.com", ["everwebinar attended"], True, rep2,
+                        "main", prospect_tag="everwebinar prospect", row=row,
+                        prefix="everwebinar", create_missing=True)
+    check("with the flag the contact is created and counted",
+          hit2 and rep2.created == 1 and len(on.created) == 1)
+    made = on.created[0] if on.created else {}
+    check("it carries the phone, normalised", made.get("phone") == "+17274123088",
+          str(made.get("phone")))
+    check("and both the attendance and prospect tags",
+          sorted(made.get("tags") or []) ==
+          ["everwebinar attended", "everwebinar prospect"], str(made.get("tags")))
+
+    junk = _FakeGHL({})
+    sync._tag_in(junk, "j@x.com", ["everwebinar absent"], True, sync.SyncReport(),
+                 "main", row={"phone_number": "Iwanttotradeoptions"},
+                 prefix="everwebinar", create_missing=True)
+    check("a junk phone is omitted rather than written",
+          "phone" not in (junk.created[0] if junk.created else {"phone": 1}))
+
+
 def main() -> int:
     for fn in [test_401_is_two_different_errors,
                test_email_dnd_covers_every_on_status,
@@ -374,7 +479,10 @@ def main() -> int:
                test_an_unfinished_event_yields_only_registration,
                test_zero_watch_time_is_not_a_view,
                test_ownership_skip_list_excludes_the_retired_fx_tags,
-               test_phone_normalisation_rejects_junk_and_fixes_double_country_code]:
+               test_phone_normalisation_rejects_junk_and_fixes_double_country_code,
+               test_contradictory_state_tags_are_cleared,
+               test_owners_are_recorded_but_not_prospected,
+               test_missing_registrants_are_created_only_when_asked]:
         fn()
     print()
     if FAILURES:
