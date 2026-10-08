@@ -1,13 +1,13 @@
 name: Sync webinar attendance to GHL
 
 # WebinarJam has no webhook -- no /webhooks route exists and the official API
-# documents none -- so attendance has to be polled. Hourly is plenty: the
-# just-in-time room runs sessions continuously and nothing downstream needs
-# sub-hour freshness.
+# documents none -- so attendance has to be polled.
 #
-# Scheduled runs target the evergreen room, because that is the one that fills
-# continuously. Live events are one-offs and run better from workflow_dispatch
-# with their own schedule id, or locally with --auto.
+# Both products are synced on every run, because both keep changing after the
+# fact. The evergreen room takes registrations continuously, and a live event's
+# replay views accumulate for weeks: 9/24 had 23 replay viewers recorded none of
+# whom existed in GHL, and 10/1 went from 35 attendees to 46 and 9 replay
+# viewers to 17 over the week nobody was syncing it.
 on:
   schedule:
     - cron: "17 * * * *"      # :17, not :00, where every other cron piles up
@@ -43,39 +43,69 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync:
+  # ---------------------------------------------------------------- scheduled
+  scheduled:
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    env:
+      WEBINARJAM_API_KEY: ${{ secrets.WEBINARJAM_API_KEY || secrets.WJ_API_KEY }}
+      GHL_API_KEY: ${{ secrets.GHL_API_KEY }}
+      GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+      GHL_SMS_API_KEY: ${{ secrets.GHL_SMS_API_KEY }}
+      GHL_SMS_LOCATION_ID: ${{ secrets.GHL_SMS_LOCATION_ID }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - run: pip install requests
 
-      - name: Sync attendance
-        env:
-          # WJ_API_KEY is accepted as an alias so either secret name works.
-          WEBINARJAM_API_KEY: ${{ secrets.WEBINARJAM_API_KEY || secrets.WJ_API_KEY }}
-          GHL_API_KEY: ${{ secrets.GHL_API_KEY }}
-          GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
-          GHL_SMS_API_KEY: ${{ secrets.GHL_SMS_API_KEY }}
-          GHL_SMS_LOCATION_ID: ${{ secrets.GHL_SMS_LOCATION_ID }}
-          PRODUCT: ${{ github.event.inputs.product || 'everwebinar' }}
-          WEBINAR_ID: ${{ github.event.inputs.webinar_id || '7' }}
-          SCHEDULE_ID: ${{ github.event.inputs.schedule_id }}
-          PREFIX: ${{ github.event.inputs.prefix }}
-          # A scheduled run writes; a manual run is a dry run unless asked.
-          APPLY: ${{ github.event_name == 'schedule' && 'yes' || github.event.inputs.apply }}
+      - name: Evergreen room
+        run: |
+          python3 cli.py sync-webinar --product everwebinar --webinar-id 7 \
+            --create --apply
+
+      # `always()` so a failure above still leaves this attempted -- the two
+      # products fail independently, and the job goes red if either does.
+      # 30 days because a live event's replay keeps earning: 46% of
+      # post-webinar revenue lands after day 7 and 17.6% in days 31-60.
+      - name: Live events, any session within 30 days
+        if: always()
+        run: |
+          python3 cli.py sync-webinar --product webinarjam --webinar-id 2 \
+            --auto --window-days 30 --apply
+
+  # ------------------------------------------------------------------- manual
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      WEBINARJAM_API_KEY: ${{ secrets.WEBINARJAM_API_KEY || secrets.WJ_API_KEY }}
+      GHL_API_KEY: ${{ secrets.GHL_API_KEY }}
+      GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+      GHL_SMS_API_KEY: ${{ secrets.GHL_SMS_API_KEY }}
+      GHL_SMS_LOCATION_ID: ${{ secrets.GHL_SMS_LOCATION_ID }}
+      PRODUCT: ${{ github.event.inputs.product }}
+      WEBINAR_ID: ${{ github.event.inputs.webinar_id }}
+      SCHEDULE_ID: ${{ github.event.inputs.schedule_id }}
+      PREFIX: ${{ github.event.inputs.prefix }}
+      APPLY: ${{ github.event.inputs.apply }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+
+      - name: Sync one target
         run: |
           set -euo pipefail
           # `if` blocks rather than `[ -n "$X" ] && args+=(...)`: under `set -e`
           # a false test makes the whole && list return non-zero and kills the
           # step, so the optional arguments silently became fatal.
-          args=(sync-webinar --product "$PRODUCT" --webinar-id "$WEBINAR_ID")
+          args=(sync-webinar --product "$PRODUCT" --webinar-id "$WEBINAR_ID" --create)
           if [ -n "${SCHEDULE_ID:-}" ]; then args+=(--schedule-id "$SCHEDULE_ID"); fi
           if [ -n "${PREFIX:-}" ]; then args+=(--prefix "$PREFIX"); fi
-          case "${APPLY:-}" in yes|true) args+=(--apply) ;; esac
+          case "${APPLY:-}" in true|yes) args+=(--apply) ;; esac
           echo "running: cli.py ${args[*]}"
           python3 cli.py "${args[@]}"
