@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 import types
 
-from ghl import attendance, campaigns, reactivation, segments, sending, weekly
+from ghl import campaigns, reactivation, segments, sending, smstarget, weekly
 from ghl import webinarjam
 from ghl.client import GHLClient, GHLError, GHLScopeError
 
@@ -291,46 +291,57 @@ def test_bulk_threshold_and_counter_flag() -> None:
           campaigns.has_usable_counters(v2) is True)
 
 
-def test_live_attendance_wins_over_replay():
-    """Both flags can be "Yes"; the live cohort is the one the revenue measures."""
-    both = {"attended_live": "Yes", "attended_replay": "Yes",
-            "time_live": "00:45:00", "time_replay": "00:10:00"}
-    check("a both-flags registrant counts as attended, not replay",
-          webinarjam.state_of(both) == "attended", webinarjam.state_of(both))
-    check("replay-only counts as replay",
-          webinarjam.state_of({"attended_live": "No", "attended_replay": "Yes"}) == "replay")
-    check("neither counts as absent",
-          webinarjam.state_of({"attended_live": "No", "attended_replay": "No"}) == "absent")
+def test_an_unfinished_event_yields_only_registration():
+    """attended_live is "No" for everyone before the session runs.
+
+    Deriving absence from that marks every registrant a no-show days early and
+    feeds them the replay sequence. This happened: 64 registrants were tagged
+    absent seven hours before a 2 PM Pacific session.
+    """
+    row = {"attended_live": "No", "attended_replay": "No"}
+    check("before the event only 'register' is returned",
+          webinarjam.classify(row, event_finished=False) == ["register"],
+          str(webinarjam.classify(row, event_finished=False)))
+    check("after the event absence is derived",
+          "absent" in webinarjam.classify(row, event_finished=True))
 
 
-def test_zero_watch_time_is_not_a_watcher():
-    """A third of "replay watchers" log 00:00:00 -- they opened the room and left.
+def test_zero_watch_time_is_not_a_view():
+    """4 of the 10 10/1 replay viewers logged 00:00:00 -- opened and left.
 
-    Tagging them as watchers would put no-shows into the warmest cohort.
+    Replay watchers convert at 6.5% against 1.4% for registrants who watched
+    nothing, so a zero-second open in the replay cohort hands a no-show the
+    warmest follow-up in the sequence.
     """
     opened_and_left = {"attended_replay": "Yes", "time_replay": "00:00:00"}
-    check("a 0-second replay view is tagged absent",
-          attendance.tags_for("replay", "10/1", opened_and_left) == ["10/1 absent"],
-          str(attendance.tags_for("replay", "10/1", opened_and_left)))
+    roles = webinarjam.classify(opened_and_left)
+    check("a 0-second replay view does not earn the replay role",
+          "replay" not in roles, str(roles))
+    check("and it reads as absent instead", "absent" in roles, str(roles))
+
     real = {"attended_replay": "Yes", "time_replay": "00:25:00"}
-    check("a 25-minute replay view is tagged replay",
-          attendance.tags_for("replay", "10/1", real) == ["10/1 replay"])
+    check("a 25-minute replay view does earn it",
+          "replay" in webinarjam.classify(real))
+
+    flash_live = {"attended_live": "Yes", "time_live": "00:00:03"}
+    check("a 3-second live 'attendance' is not attendance",
+          "attended" not in webinarjam.classify(flash_live),
+          str(webinarjam.classify(flash_live)))
 
 
-def test_bot_owner_set_excludes_the_retired_fx_tags():
+def test_ownership_skip_list_excludes_the_retired_fx_tags():
     """"new bot user" is the retired FX bot: 163 contacts, zero bot orders.
 
     Asserted as literals rather than against the constant, so widening the
     constant cannot quietly make this pass.
     """
+    owns = {t.lower() for t in smstarget.OWNS_PITCHED_PRODUCT}
     for wrong in ("new bot user", "new bot", "bot installed", "new combo purchase",
                   "bot web invite", "flight path attended", "flight path absent"):
-        check(f"{wrong!r} is not treated as ownership",
-              wrong not in attendance.BOT_OWNER_TAGS | attendance.FLIGHT_PATH_TAGS)
-    check("the five validated bot tags are all present",
-          {"options bot sale", "options bot presale", "options auto trader",
-           "option and bot combo", "option bot combo"} == set(attendance.BOT_OWNER_TAGS),
-          str(sorted(attendance.BOT_OWNER_TAGS)))
+        check(f"{wrong!r} is not treated as ownership", wrong not in owns)
+    for right in ("options bot sale", "options bot presale", "options auto trader",
+                  "option and bot combo", "option bot combo", "flight path member"):
+        check(f"{right!r} is treated as ownership", right in owns)
 
 
 def test_phone_normalisation_rejects_junk_and_fixes_double_country_code():
@@ -360,9 +371,9 @@ def main() -> int:
                test_ranking_excludes_rather_than_zeroes_missing_data,
                test_zero_delivery_does_not_crash_or_flatter,
                test_bulk_threshold_and_counter_flag,
-               test_live_attendance_wins_over_replay,
-               test_zero_watch_time_is_not_a_watcher,
-               test_bot_owner_set_excludes_the_retired_fx_tags,
+               test_an_unfinished_event_yields_only_registration,
+               test_zero_watch_time_is_not_a_view,
+               test_ownership_skip_list_excludes_the_retired_fx_tags,
                test_phone_normalisation_rejects_junk_and_fixes_double_country_code]:
         fn()
     print()

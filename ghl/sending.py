@@ -25,6 +25,7 @@ from .segments import MAILABLE, all_of, has_tag
 # Deliberately NOT suppressed: "bad timing" is a sales-stage tag meaning "not
 # ready to buy", not "do not contact".
 SUPPRESSION_TAGS = [
+    "verified bad",    # invalid/abuse/spamtrap verdict from email verification
     "spamtrap",        # sending here is the fastest route to a blocklist
     "complainer",      # previously hit "report spam"
     "never send",      # largest single suppression set in UOO

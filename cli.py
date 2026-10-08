@@ -16,27 +16,14 @@ from __future__ import annotations
 
 import argparse
 import csv
-import datetime
 import os
 import sys
 from pathlib import Path
 
-from ghl.client import GHLClient, GHLError, GHLScopeError
-from ghl import segments, sending, reactivation, weekly, rollout, campaigns
-
-
-def scoped(fn, fmt=lambda v: f"{v:,}"):
-    """Render a value from a scoped endpoint, or say why it is missing.
-
-    A private integration token can be issued with contact access but without
-    the locations, workflows or emails scopes. Those reads 401 while every
-    contact-driven command keeps working, so `info` reports what it can rather
-    than failing whole.
-    """
-    try:
-        return fmt(fn())
-    except GHLScopeError:
-        return "unavailable (token lacks this scope)"
+from ghl.client import GHLClient, GHLError
+from ghl import (segments, sending, reactivation, weekly, rollout, clicks,
+                 smstarget, sync as syncmod)
+from ghl.webinarjam import WebinarJamClient, WebinarJamError
 
 
 def build_filters(args) -> list[dict]:
@@ -53,21 +40,17 @@ def build_filters(args) -> list[dict]:
 
 
 def cmd_info(client: GHLClient, args) -> None:
-    try:
-        loc = client.location()
-        print(f"location : {loc.get('name')}  ({loc.get('id')})")
-        print(f"timezone : {loc.get('timezone')}")
-    except GHLScopeError:
-        print(f"location : {client.location_id}")
-        print("timezone : unavailable (token lacks the locations scope)")
+    loc = client.location()
+    print(f"location : {loc.get('name')}  ({loc.get('id')})")
+    print(f"timezone : {loc.get('timezone')}")
     print(f"contacts : {client.count_contacts():,}")
     print(f"mailable : {client.count_contacts(segments.all_of(segments.MAILABLE)):,}"
           "   (has email, global DND off, email DND off)")
     print(f"sendable : {client.count_contacts(sending.safe_send()):,}"
           "   (mailable, minus suppression tags)")
-    print(f"tags     : {scoped(lambda: len(client.tags()))}")
-    print(f"fields   : {scoped(lambda: len(client.custom_fields()))} custom fields")
-    print(f"workflows: {scoped(lambda: len(client.workflows()))}")
+    print(f"tags     : {len(client.tags()):,}")
+    print(f"fields   : {len(client.custom_fields()):,} custom fields")
+    print(f"workflows: {len(client.workflows()):,}")
 
 
 def cmd_tags(client: GHLClient, args) -> None:
@@ -104,19 +87,10 @@ def cmd_audit(client: GHLClient, args) -> None:
     print("=" * 58)
     for key, label in [("total", "all contacts"),
                        ("mailable", "has email, DND off"),
-                       ("safe_send", "minus suppression tags")]:
+                       ("safe_send", "minus suppression tags"),
+                       ("validated", "+ confirmed deliverable"),
+                       ("engaged", "+ has engagement tag")]:
         print(f"  {label:<32}{a[key]:>8,}  {100 * a[key] / total:>5.1f}%")
-    print("-" * 58)
-    # engaged and validated are two independent narrowings of safe_send, not
-    # further steps below it. Listing them in one column made the funnel look
-    # cumulative, which understates the safe list by an order of magnitude.
-    print("  narrowings of the safe list:")
-    for key, label in [("engaged", "+ has engagement tag"),
-                       ("validated", "+ confirmed deliverable")]:
-        note = ""
-        if key == "validated" and not a[key]:
-            note = "  <- no validEmail data in this location"
-        print(f"  {label:<32}{a[key]:>8,}  {100 * a[key] / total:>5.1f}%{note}")
     print("=" * 58)
     hidden = a["mailable"] - a["safe_send"]
     print(f"  suppression removes {hidden:,} that a plain --mailable segment "
@@ -128,17 +102,7 @@ def cmd_audit(client: GHLClient, args) -> None:
             print(f"  {n:>7,}  {tag}")
 
 
-def cmd_sendlist(client: GHLClient, args) -> int | None:
-    if args.tier == "validated" and not sending.validation_data_available(client):
-        # Refuse rather than export an empty file. A zero-row send list reads as
-        # "nobody qualified" when the truth is that the field it filters on has
-        # no data, and the two call for opposite responses.
-        print("error: --tier validated filters on validEmail, and no contact in this\n"
-              "       location has validEmail == true, so the tier matches nothing.\n"
-              "       GHL sets validEmail only after it has sent to an address; that\n"
-              "       history is absent here. Use --tier engaged, or --tier safe.",
-              file=sys.stderr)
-        return 1
+def cmd_sendlist(client: GHLClient, args) -> None:
     tier = {"safe": sending.safe_send, "engaged": sending.engaged,
             "validated": sending.validated}[args.tier]
     extra = [segments.has_tag(t) for t in (args.tag or [])]
@@ -160,12 +124,6 @@ def cmd_reactivation(client: GHLClient, args) -> None:
     print(f"  verification candidates              {s['verify_candidates']:>7,}")
     print(f"    already recorded bad               {s['confirmed_bad']:>7,}")
     print(f"    worth paying to verify             {s['worth_verifying']:>7,}")
-    if not sending.validation_data_available(client):
-        print()
-        print("  note: 'already recorded bad' comes from validEmail, which is not")
-        print("        populated in this location. A near-zero figure here means GHL")
-        print("        has no delivery history to answer with, not that the candidate")
-        print("        list is clean -- expect the verifier to find bad addresses.")
     print()
     if not args.out_dir:
         print("  pass --out-dir to export the lists")
@@ -208,25 +166,17 @@ def cmd_reactivation(client: GHLClient, args) -> None:
     print("  irrelevant and acting on it would be an opt-out violation.")
 
 
-def cmd_weekly(client: GHLClient, args) -> int | None:
+def cmd_weekly(client: GHLClient, args) -> None:
     rows = weekly.plan(client, args.event, reminders=args.reminders)
     print(f"SEND PLAN for event {args.event!r}")
     print("=" * 58)
     print(f"  {'slot':<22}{'track':<8}{'recipients':>12}")
     print("-" * 58)
-    failed = False
-    for slot, track, n, err in rows:
+    for slot, track, n in rows:
         label = {"A": "A reg", "B": "B unreg", "-": "post"}[track]
-        if n >= 0:
-            print(f"  {slot:<22}{label:<8}{n:>12,}")
-        else:
-            failed = True
-            print(f"  {slot:<22}{label:<8}{'FAILED':>12}   {err}")
+        print(f"  {slot:<22}{label:<8}{n:>12,}" if n >= 0
+              else f"  {slot:<22}{label:<8}{'tag missing':>12}")
     print("-" * 58)
-    if failed:
-        print("  a slot failed to count and would be skipped by an export; fix that")
-        print("  before relying on this plan\n")
-        return 1
     if not args.out_dir:
         print("  pass --out-dir to export one CSV per slot")
         return
@@ -234,7 +184,7 @@ def cmd_weekly(client: GHLClient, args) -> int | None:
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     seen: dict[str, str] = {}
-    for slot, track, n, _err in rows:
+    for slot, track, n in rows:
         if n <= 0:
             continue
         builder = dict((s, b) for s, _, b in weekly.slots_for(args.reminders))[slot]
@@ -297,68 +247,457 @@ def cmd_rollout(client: GHLClient, args) -> None:
     print(f"  wrote {written:,} recipients to {out}")
 
 
-def cmd_campaigns(client: GHLClient, args) -> int | None:
-    since = None
-    if args.since:
-        since = datetime.datetime.strptime(args.since, "%Y-%m-%d")
-    print(f"collecting sends >= {args.min_recipients:,} recipients"
-          + (f" since {args.since}" if args.since else "") + " ...", file=sys.stderr)
-    sends = campaigns.bulk_sends(client, since=since, min_recipients=args.min_recipients)
+def _relevant_schedules(wj, webinar_id, window_days):
+    """Schedules within +/- window_days of now.
+
+    Covers both directions on purpose: an upcoming session needs its
+    registrations mirrored so Track B can exclude them, and a session that has
+    just run needs its attendance and replay data pulled in.
+    """
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    out = []
+    for s in wj.schedules(webinar_id):
+        try:
+            when = datetime.strptime(str(s.get("date", "")), "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        if abs((when - now).total_seconds()) <= window_days * 86400:
+            out.append((s.get("schedule"), when))
+    return sorted(out, key=lambda x: x[1])
+
+
+def cmd_sync_webinar(client: GHLClient, args) -> None:
+    wj = WebinarJamClient(product=args.product)
+
+    if not args.list and args.webinar_id is None:
+        print("--webinar-id is required (or pass --list to see them)", file=sys.stderr)
+        return
+
+    if args.list:
+        print(f"{args.product} webinars:")
+        for w in wj.webinars():
+            print(f"  id={w['webinar_id']:<4} hash={w.get('webinar_hash','?'):<10} "
+                  f"{w.get('name','?')}  schedules={w.get('schedules')}")
+        return
+
+    # An evergreen room has no scheduled sessions: its schedule is the literal
+    # string "Just in time" with no date and no id, so there is nothing to look
+    # up, nothing to wait for, and attendance is knowable as soon as someone has
+    # been through. The whole has_run / settle-minutes path below is therefore
+    # skipped for it rather than given a fake schedule id.
+    if wj.evergreen:
+        _sync_one(client, wj, args, evergreen=True)
+        return
+
+    if args.auto:
+        found = _relevant_schedules(wj, args.webinar_id, args.window_days)
+        if not found:
+            print(f"no session within {args.window_days} days of now - nothing to sync")
+            return
+        print(f"auto: {len(found)} session(s) within {args.window_days} days\n")
+        for sched, when in found:
+            args.schedule_id = sched
+            args.prefix = None
+            _sync_one(client, wj, args)
+            print()
+        return
+
+    if not args.schedule_id:
+        print(f"schedules for webinar {args.webinar_id}:")
+        for s in wj.schedules(args.webinar_id):
+            print(f"  schedule={s.get('schedule')}  {s.get('date')}  {s.get('comment','')}")
+        print("\n  pass --schedule-id to sync one session, or --auto")
+        return
+
+    _sync_one(client, wj, args)
+
+
+def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> None:
+
+    # Attendance roles are meaningless until the session has run: WebinarJam
+    # reports attended_live as "No" for everyone beforehand. has_run() compares
+    # in the webinar's own timezone -- a naive comparison against datetime.now()
+    # runs on the container's UTC clock and declared a 2 PM Pacific session
+    # finished from 7 AM Pacific, tagging every registrant absent seven hours
+    # early. An unreadable date returns None, and None must not be treated as
+    # finished: writing attendance off a guess is the failure being prevented.
+    #
+    # None of that applies to an evergreen room. It has no start time to compare
+    # against, and a just-in-time session is already over for anyone who
+    # registered, so attendance is trustworthy on arrival.
+    sched_date = None
+    if evergreen:
+        event_finished, ran = True, True
+    else:
+        for s in wj.schedules(args.webinar_id):
+            if str(s.get("schedule")) == str(args.schedule_id):
+                sched_date = str(s.get("date", ""))
+        ran = wj.has_run(args.webinar_id, args.schedule_id, args.settle_minutes)
+        event_finished = ran is True
+
+    prefix = args.prefix
+    if not prefix and not evergreen:
+        for s in wj.schedules(args.webinar_id):
+            if str(s.get("schedule")) == str(args.schedule_id):
+                d = str(s.get("date", ""))[:10].split("-")
+                if len(d) == 3:
+                    prefix = f"{int(d[1])}/{int(d[2])}"
+    if not prefix:
+        # An evergreen room runs continuously, so a per-date prefix would mint a
+        # new tag every day. One stable namespace keeps the cohort queryable,
+        # and it reuses the tags this location already has history on.
+        prefix = "everwebinar" if evergreen else None
+        if not prefix:
+            print("could not derive a tag prefix; pass --prefix", file=sys.stderr)
+            return
+
+    mode = "APPLYING" if args.apply else "DRY RUN - nothing will be written"
+    where = "just in time" if evergreen else f"schedule {args.schedule_id}"
+    print(f"{wj.product} webinar {args.webinar_id} {where} -> tag prefix {prefix!r}")
+    print(f"{mode}\n")
+
+    if not event_finished:
+        if ran is None:
+            print("  could not read this session's start time, so attendance is")
+            print("  treated as unknown and only the registration tag is applied.")
+            print("  Pass a session that appears in the webinar's schedule list.\n")
+        else:
+            print(f"  session runs {sched_date} ({wj.webinar(args.webinar_id).get('timezone')})")
+            print("  - not finished yet, so only the registration tag is applied")
+            print("  (attendance is not knowable yet)\n")
+
+    import os
+    secondary = None
+    if os.environ.get("GHL_SMS_API_KEY") and os.environ.get("GHL_SMS_LOCATION_ID"):
+        secondary = GHLClient(token=os.environ["GHL_SMS_API_KEY"],
+                              location_id=os.environ["GHL_SMS_LOCATION_ID"])
+        print(f"  also tagging in SMS location {secondary.location_id}\n")
+
+    rep = syncmod.sync(wj, client, args.webinar_id,
+                       None if evergreen else args.schedule_id, prefix,
+                       stayed_minutes=args.stayed_minutes, apply=args.apply,
+                       event_finished=event_finished, secondary=secondary,
+                       schedule_contains=args.schedule_text,
+                       skip_tags=(smstarget.OWNS_PITCHED_PRODUCT
+                                  if not args.include_customers else None))
+
+    print(f"  registrants in WebinarJam   {rep.registrants:>7,}")
+    print(f"  matched to a GHL contact    {rep.matched:>7,}")
+    print(f"  no GHL contact found        {len(rep.unmatched):>7,}")
+    if rep.tags_applied or rep.already_tagged:
+        print(f"\n  {'tag':<28}{'to apply':>10}{'already':>10}")
+        print("  " + "-" * 48)
+        for tag in sorted(set(rep.tags_applied) | set(rep.already_tagged)):
+            print(f"  {tag:<28}{rep.tags_applied.get(tag,0):>10,}{rep.already_tagged.get(tag,0):>10,}")
+    if rep.unmatched:
+        print(f"\n  unmatched addresses (first 10):")
+        for e in rep.unmatched[:10]:
+            print(f"    {e}")
+    if rep.errors:
+        print(f"\n  {len(rep.errors)} error(s):")
+        for e in rep.errors[:5]:
+            print(f"    {e}")
+
+    if args.apply:
+        print("\n  RECONCILIATION (GHL tag counts vs this session)")
+        print("  " + "-" * 48)
+        for tag, expected, actual in syncmod.reconcile(client, prefix, rep):
+            flag = "" if actual >= expected else "   <-- SHORTFALL"
+            print(f"  {tag:<28}{expected:>8,} expected{actual:>8,} in GHL{flag}")
+    else:
+        print("\n  re-run with --apply to write these tags")
+
+
+def cmd_register(client: GHLClient, args) -> None:
+    """Register people who clicked a one-click link but never landed in WebinarJam.
+
+    GHL records the click; WebinarJam records the registration. A click with no
+    matching registration means the link resolved for the tracker but the
+    registration itself did not complete -- a mail gateway rewriting the URL, a
+    scanner following it, or a client mangling the query string.
+    """
+    wj = WebinarJamClient()
+
+    emails = list(args.email or [])
+    if args.file:
+        with open(args.file, newline="", encoding="utf-8-sig") as fh:
+            head = fh.readline()
+            fh.seek(0)
+            if "," in head or "@" not in head:      # looks like a CSV with a header
+                for row in csv.DictReader(fh):
+                    for k, v in row.items():
+                        if k and "email" in k.lower() and v and "@" in v:
+                            emails.append(v.strip())
+                            break
+            else:                                    # one address per line
+                emails += [l.strip() for l in fh if "@" in l]
+
+    emails = list(dict.fromkeys(e.strip().lower() for e in emails if e.strip()))
+    if not emails:
+        print("no email addresses given; use --email or --file", file=sys.stderr)
+        return
+
+    already = {(r.get("email") or "").strip().lower()
+               for r in wj.registrants(args.webinar_id, args.schedule_id)}
+    todo = [e for e in emails if e not in already]
+
+    print(f"  {len(emails):,} address(es) given")
+    print(f"  {len(emails) - len(todo):,} already registered in WebinarJam")
+    print(f"  {len(todo):,} to register\n")
+    if not todo:
+        return
+    if not args.apply:
+        for e in todo[:20]:
+            print(f"    {e}")
+        print("\n  re-run with --apply to register them")
+        return
+
+    ok = failed = nocontact = 0
+    for email in todo:
+        found = list(client.search_contacts(
+            filters=[{"field": "email", "operator": "eq", "value": email}], max_records=1))
+        if not found:
+            print(f"    skip (no GHL contact): {email}")
+            nocontact += 1
+            continue
+        ct = found[0]
+        try:
+            wj.register(args.webinar_id, args.schedule_id, email,
+                        ct.get("firstName") or "", ct.get("lastName") or "")
+            ok += 1
+            print(f"    registered: {email}")
+        except WebinarJamError as exc:
+            failed += 1
+            print(f"    FAILED {email}: {str(exc)[:120]}")
+    print(f"\n  {ok:,} registered, {failed:,} failed, {nocontact:,} skipped")
+    print("  WebinarJam sends each of them the confirmation and join link.")
+
+
+def cmd_clicks(client: GHLClient, args) -> None:
+    """Who clicked a GHL email this week, and whether they made it to WebinarJam.
+
+    Clicks are only reachable per contact, three API hops deep -- see
+    ghl/clicks.py for why, and for why a click is attributed to a specific send
+    rather than to the contact.
+    """
+    sends = clicks.recent_sends(client, days=args.days)
     if not sends:
-        print("no sends matched those filters")
-        return 0
+        print(f"no completed sends in the last {args.days} days")
+        return
 
-    stale = [s for s in sends if not campaigns.has_usable_counters(s)]
-    print(f"{len(sends):,} bulk send(s); fetching statistics ...", file=sys.stderr)
-    try:
-        rows = campaigns.build_rows(client, sends)
-    except GHLScopeError as exc:
-        print(f"error: {exc}\n", file=sys.stderr)
-        print("       Adding a scope to a GoHighLevel private integration does not widen\n"
-              "       a token that already exists. Regenerate the token after saving the\n"
-              "       scope and put the new pit-... value in GHL_API_KEY.", file=sys.stderr)
-        return 1
+    print(f"SENDS in the last {args.days} days\n")
+    print(f"  {'send':<28}{'scheduled':<17}{'delivered':>10}  {'tracking':<9}"
+          f"{'reg link':<10}click means")
+    print("  " + "-" * 92)
+    for s in sends:
+        means = ("register" if s.asks_registration and not s.ambiguous_click
+                 else "AMBIGUOUS" if s.asks_registration else "-")
+        print(f"  {s.name[:27]:<28}{s.scheduled.strftime('%a %m-%d %H:%MZ'):<17}"
+              f"{s.recipients:>10,}  {'on' if s.tracking else 'OFF':<9}"
+              f"{'yes' if s.asks_registration else 'no':<10}{means}")
+    dark = [s for s in sends if not s.tracking and s.asks_registration]
+    if dark:
+        print("\n  NOTE: click tracking was off on "
+              f"{', '.join(s.name for s in dark)}.")
+        print("  Clicks there are unrecorded and cannot appear below. Untracked")
+        print("  links are also unrewritten, so those one-clicks reached")
+        print("  WebinarJam directly -- absence of data is not absence of clicks.")
 
-    ranked = campaigns.rank(rows, by=args.by, top=args.top)
-    if not ranked:
-        print(f"statistics returned no usable {args.by} for any send.")
-        failed = [r for r in rows if r["error"]]
-        if failed:
-            print(f"  {len(failed)} of {len(rows)} lookups errored, e.g. {failed[0]['error']}")
-        return 1
+    print(f"\nscanning clickers ...", file=sys.stderr)
+    found = clicks.scan(client, sends, args.since, args.until,
+                        progress=lambda n, f: print(f"  {n} candidates, {f} clickers",
+                                                    end="\r", file=sys.stderr))
+    intent, unclear, other = clicks.split_by_intent(found, sends)
+    print(f"\n{len(found):,} clicker(s): {len(intent):,} definite registration "
+          f"intent, {len(unclear):,} ambiguous, {len(other):,} on sends with no "
+          f"register link\n")
 
-    label = {"open_rate": "open rate", "click_rate": "click rate",
-             "cto_rate": "click-to-open"}[args.by]
-    print(f"\nTOP {len(ranked)} BULK EMAILS BY {label.upper()}")
-    print("=" * 96)
-    print(f"  {'#':<3}{'date':<12}{'open':>7}{'click':>7}{'CTO':>7}{'delivered':>11}  subject")
-    print("-" * 96)
-    for i, r in enumerate(ranked, 1):
-        def pct(key):
-            return f"{r[key]:.1f}%" if r.get(key) is not None else "  -  "
-        date = r["date"].strftime("%Y-%m-%d") if r["date"] else "?"
-        print(f"  {i:<3}{date:<12}{pct('open_rate'):>7}{pct('click_rate'):>7}"
-              f"{pct('cto_rate'):>7}{r['delivered']:>11,}  {str(r['subject'])[:44]}")
-    print("-" * 96)
-    if stale:
-        print(f"  note: {len(stale)} send(s) in range predate the v2 counters and may "
-              f"under-report", file=sys.stderr)
+    registered: set[str] = set()
+    if args.webinar_id and args.schedule_id:
+        wj = WebinarJamClient()
+        registered = {(r.get("email") or "").strip().lower()
+                      for r in wj.registrants(args.webinar_id, args.schedule_id)}
+
+    missing = [c for c in intent if c.email and c.email not in registered]
+    print(f"  {'email':<38}{'in WJ':<7}{'tagged':<8}sends clicked")
+    print("  " + "-" * 96)
+    tag = f"{args.prefix} register" if args.prefix else None
+    for c in sorted(intent, key=lambda x: x.email):
+        in_wj = "yes" if c.email in registered else "NO"
+        tagged = "-"
+        if tag:
+            tagged = "yes" if tag in (c.tags or []) else "NO"
+        print(f"  {c.email[:37]:<38}{in_wj:<7}{tagged:<8}{'; '.join(c.register_sends)[:44]}")
+
+    if unclear:
+        missing_unclear = [c for c in unclear if c.email and c.email not in registered]
+        print(f"\n  AMBIGUOUS -- clicked a send that had a register link AND "
+              f"something else\n  clickable. The API exposes no per-link data, so "
+              f"these cannot be resolved.\n  {len(missing_unclear):,} of "
+              f"{len(unclear):,} are not in WebinarJam. Decide, do not assume:")
+        for c in sorted(unclear, key=lambda x: x.email):
+            mark = "not in WJ" if c.email not in registered else "in WJ"
+            print(f"    {c.email[:37]:<38}{mark:<11}{'; '.join(c.register_sends)[:34]}")
+
+    if other:
+        print(f"\n  clicked only a send with no register link "
+              f"(NOT registration intent, left alone):")
+        for c in sorted(other, key=lambda x: x.email):
+            print(f"    {c.email[:37]:<38}{'; '.join(c.register_sends)[:44]}")
 
     if args.out:
-        out = Path(args.out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        cols = ["date", "name", "subject", "recipients", "delivered", "opens", "clicks",
-                "open_rate", "click_rate", "cto_rate", "bounces", "unsubscribes",
-                "complaints", "counters_usable", "error"]
-        with out.open("w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
-            w.writeheader()
-            for r in campaigns.rank(rows, by=args.by):
-                row = dict(r)
-                row["date"] = r["date"].strftime("%Y-%m-%d") if r["date"] else ""
-                w.writerow(row)
-        print(f"  wrote full ranking to {out}")
-    return 0
+        with open(args.out, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["email", "firstName", "lastName", "phone", "contactId",
+                        "in_webinarjam", "clicked_sends"])
+            for c in sorted(intent, key=lambda x: x.email):
+                w.writerow([c.email, c.first, c.last, c.phone, c.contact_id,
+                            "yes" if c.email in registered else "no",
+                            "; ".join(c.register_sends)])
+        print(f"\n  wrote {len(intent):,} row(s) to {args.out}")
+
+    if registered:
+        print(f"\n  {len(missing):,} clicked a register link but are not in WebinarJam.")
+        if missing:
+            print("  Register them with:")
+            print(f"    python3 cli.py register --webinar-id {args.webinar_id} "
+                  f"--schedule-id {args.schedule_id} --file {args.out or 'clicks.csv'} --apply")
+
+
+def cmd_smslist(client: GHLClient, args) -> None:
+    """A small, high-intent SMS list, checked against the SMS location too."""
+    token = os.environ.get("GHL_SMS_API_KEY")
+    location = os.environ.get("GHL_SMS_LOCATION_ID")
+    if not token or not location:
+        print("GHL_SMS_API_KEY and GHL_SMS_LOCATION_ID must be set", file=sys.stderr)
+        return
+    sms = GHLClient(token=token, location_id=location)
+
+    targets, rejected = smstarget.build(
+        client, sms, f"{args.prefix} register", args.since, args.until, args.count,
+        progress=lambda n, w: print(f"  {n}/{w} verified", end="\r", file=sys.stderr))
+
+    print(f"\n{len(targets):,} target(s) selected\n")
+    counts: dict[str, int] = {}
+    for t in targets:
+        counts[t.tier] = counts.get(t.tier, 0) + 1
+    for tier in sorted(counts):
+        print(f"  {tier:<34}{counts[tier]:>6,}")
+    print("\n  rejected while verifying:")
+    for reason, n in rejected.items():
+        if n:
+            print(f"    {reason:<24}{n:>6,}")
+
+    if args.tag and args.rescreen:
+        kept, reasons = smstarget.rescreen(client, sms, args.tag,
+                                           f"{args.prefix} register", args.apply)
+        verb = "removed" if args.apply else "would remove"
+        print(f"\n  RE-SCREEN of {args.tag!r}: {kept:,} still qualify")
+        for reason, n in sorted(reasons.items()):
+            print(f"    {verb} {n:>4}  {reason}")
+        if not reasons:
+            print("    nothing to remove")
+        return
+
+    if args.tag:
+        if not args.apply:
+            print(f"\n  DRY RUN -- would tag these {len(targets):,} with "
+                  f"{args.tag!r} in both locations")
+            print("  re-run with --apply to write it")
+        else:
+            print(f"\n  tagging {len(targets):,} with {args.tag!r} ...", file=sys.stderr)
+            counts = smstarget.apply_tag(
+                client, sms, targets, args.tag,
+                progress=lambda n, t: print(f"  {n}/{t}", end="\r", file=sys.stderr))
+            print(f"\n  tagged {counts['sms']:,} in the SMS location "
+                  f"(where the workflow runs)")
+            print(f"  tagged {counts['main']:,} in the main location (for reporting)")
+            if counts["failed"]:
+                print(f"  {counts['failed']:,} write(s) failed")
+
+    if not args.out_dir:
+        if not args.tag:
+            print("\n  pass --out-dir to write the batches, or --tag to tag them")
+        return
+
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for i in range(0, len(targets), args.batch):
+        batch = targets[i:i + args.batch]
+        path = out / f"sms-batch{i // args.batch + 1}.csv"
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["phone", "firstName", "lastName", "email", "tier",
+                        "contactId", "smsContactId"])
+            for t in batch:
+                w.writerow([t.phone, t.first, t.last, t.email, t.tier,
+                            t.contact_id, t.sms_contact_id])
+        print(f"  wrote {len(batch):>4} to {path}")
+
+
+def cmd_mirror_tag(client: GHLClient, args) -> None:
+    """Copy a tag's membership from the main location into the SMS sub-account."""
+    token, location = os.environ.get("GHL_SMS_API_KEY"), os.environ.get("GHL_SMS_LOCATION_ID")
+    if not token or not location:
+        print("GHL_SMS_API_KEY and GHL_SMS_LOCATION_ID must be set", file=sys.stderr)
+        return
+    sms = GHLClient(token=token, location_id=location)
+    print(f"  mirroring {args.tag!r} -> SMS location as "
+          f"{(args.rename or args.tag)!r}", file=sys.stderr)
+    c = syncmod.mirror_tag(client, sms, args.tag, args.apply, args.rename)
+    verb = "tagged" if args.apply else "would tag"
+    print(f"\n  {c['source']:,} hold the tag in the main location")
+    print(f"  {verb} {c['tagged']:,} in the SMS location")
+    print(f"  {c['already']:,} already had it")
+    print(f"  {c['no_match']:,} have no record in the SMS location (not created)")
+    if c["failed"]:
+        print(f"  {c['failed']:,} writes failed")
+    if not args.apply:
+        print("\n  re-run with --apply to write it")
+
+
+def cmd_untag(client: GHLClient, args) -> None:
+    """Remove a tag from everyone who has since picked up another one.
+
+    The point of this is keeping a campaign audience honest while it runs. A
+    replay-chase list has to shrink as people watch: anyone who converts should
+    drop out of the sends still queued behind them, and the conversion shows up
+    as a tag the WebinarJam sync writes. Run it between sends.
+
+    Contacts are read one at a time rather than trusted from the search result,
+    because GHL's search index lags behind writes -- a contact tagged minutes
+    ago may not show the tag in a search, and pruning off a stale index would
+    leave exactly the people who just converted still in the audience.
+    """
+    targets = [client]
+    labels = ["main"]
+    token, location = os.environ.get("GHL_SMS_API_KEY"), os.environ.get("GHL_SMS_LOCATION_ID")
+    if token and location and not args.main_only:
+        targets.append(GHLClient(token=token, location_id=location))
+        labels.append("sms")
+
+    for label, ghl in zip(labels, targets):
+        holders = list(ghl.search_contacts(
+            [{"field": "tags", "operator": "eq", "value": args.tag}]))
+        removed = 0
+        for row in holders:
+            record = ghl.request("GET", f"/contacts/{row['id']}").get("contact", {})
+            have = {t.lower() for t in (record.get("tags") or [])}
+            if not (have & {t.lower() for t in args.if_tagged}):
+                continue
+            removed += 1
+            if args.apply:
+                try:
+                    ghl.request("DELETE", f"/contacts/{row['id']}/tags",
+                                json={"tags": [args.tag]})
+                except GHLError as exc:
+                    print(f"    failed {row['id']}: {str(exc)[:80]}", file=sys.stderr)
+        verb = "removed" if args.apply else "would remove"
+        print(f"  {label:<5} {len(holders):>6,} hold {args.tag!r}; "
+              f"{verb} {removed:,} who now match")
+    if not args.apply:
+        print("\n  re-run with --apply to write it")
 
 
 def cmd_count(client: GHLClient, args) -> None:
@@ -371,54 +710,6 @@ def cmd_export(client: GHLClient, args) -> None:
     print(f"{total:,} contact(s) match; exporting to {args.out} ...", file=sys.stderr)
     written = segments.export_csv(client, filters, args.out, max_records=args.limit)
     print(f"wrote {written:,} row(s) to {args.out}")
-
-
-def cmd_webinar(client: GHLClient, args) -> int | None:
-    """Sync WebinarJam/EverWebinar attendance into tags, in both sub-accounts."""
-    from ghl import attendance
-    from ghl.webinarjam import WebinarJamClient, WebinarJamError
-
-    try:
-        wj = WebinarJamClient(product=args.product)
-    except WebinarJamError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    if args.list:
-        for w in wj.webinars():
-            print(f"  id={w['webinar_id']:<4} hash={w.get('webinar_hash','?'):<10} "
-                  f"{w.get('name','?')}  schedules={w.get('schedules')}")
-        return 0
-
-    # The second sub-account is optional: without its credentials this still
-    # works, it just cannot see history or write tags on that side.
-    accounts = [("EMAIL", client)]
-    alt_key = os.environ.get("GHL_SMS_API_KEY")
-    alt_loc = os.environ.get("GHL_SMS_LOCATION_ID")
-    if alt_key and alt_loc:
-        accounts.append(("SMS", GHLClient(alt_key, alt_loc)))
-    else:
-        print("note: GHL_SMS_API_KEY/GHL_SMS_LOCATION_ID unset -- "
-              "syncing the email sub-account only", file=sys.stderr)
-
-    rep = attendance.sync(wj, args.webinar_id, args.prefix, accounts,
-                          skip_customers=not args.include_customers,
-                          create_missing=args.create,
-                          schedule_contains=args.schedule,
-                          dry_run=not args.write)
-    mode = "WROTE" if args.write else "dry run"
-    print(f"\n{mode}: {rep['registrants']:,} registrant(s) on "
-          f"{args.product} webinar {args.webinar_id}")
-    print(f"  by state        {rep['by_state']}")
-    print(f"  tags written    {rep['written']:,}")
-    print(f"  contacts made   {rep['created']:,}")
-    print(f"  already tagged  {rep['already_tagged']:,}")
-    print(f"  skipped (owns)  {rep['skipped_customer']:,}")
-    print(f"  not in GHL      {rep['not_found']:,}")
-    print(f"  failed          {rep['failed']:,}")
-    for d in rep["detail"][:10]:
-        print(f"    ! {d}")
-    return 1 if rep["failed"] else 0
 
 
 def main() -> int:
@@ -463,6 +754,82 @@ def main() -> int:
     p.add_argument("--out", help="CSV path for this step's recipients")
     p.set_defaults(func=cmd_rollout)
 
+    p = sub.add_parser("sync-webinar")
+    p.add_argument("--product", default="webinarjam",
+                   choices=["webinarjam", "everwebinar"],
+                   help="webinarjam for live events, everwebinar for the "
+                        "evergreen / just-in-time room (separate APIs, one key)")
+    p.add_argument("--list", action="store_true",
+                   help="list this product's webinars and ids, then exit")
+    p.add_argument("--webinar-id", type=int,
+                   help="required unless --list")
+    p.add_argument("--schedule-id", type=int, help="omit to list available schedules")
+    p.add_argument("--auto", action="store_true",
+                   help="sync every session within --window-days of now; no weekly edits needed")
+    p.add_argument("--window-days", type=int, default=7)
+    p.add_argument("--prefix", help="tag prefix, e.g. \"7/30\"; derived from the schedule date if omitted")
+    p.add_argument("--settle-minutes", type=int, default=120,
+                   help="minutes after the start before attendance is trusted; "
+                        "the API gives no duration, so this must exceed the "
+                        "session length or late joiners get tagged absent")
+    p.add_argument("--stayed-minutes", type=int, default=0,
+                   help="also tag '<prefix> stayed' for anyone whose live watch time reached this")
+    p.add_argument("--schedule-text",
+                   help="filter registrants whose schedule contains this text, "
+                        "e.g. '1 Oct 2026' -- a live webinar id spans every "
+                        "session ever run under it")
+    p.add_argument("--include-customers", action="store_true",
+                   help="also tag people who already own what the webinar sells")
+    p.add_argument("--apply", action="store_true", help="write tags (default is a dry run)")
+    p.set_defaults(func=cmd_sync_webinar)
+
+    p = sub.add_parser("register")
+    p.add_argument("--webinar-id", type=int, required=True)
+    p.add_argument("--schedule-id", type=int, required=True, help="global schedule id, e.g. 107")
+    p.add_argument("--email", action="append", help="address to register (repeatable)")
+    p.add_argument("--file", help="CSV or newline list of addresses")
+    p.add_argument("--apply", action="store_true", help="register them (default is a dry run)")
+    p.set_defaults(func=cmd_register)
+
+    p = sub.add_parser("clicks", help="who clicked a GHL email, and whether "
+                                      "they reached WebinarJam")
+    p.add_argument("--days", type=int, default=7, help="how far back to look for sends")
+    p.add_argument("--since", default="2026-07-27", help="ISO date, start of the contact window")
+    p.add_argument("--until", default="2100-01-01", help="ISO date, end of the contact window")
+    p.add_argument("--webinar-id", type=int, help="cross-reference WebinarJam registrants")
+    p.add_argument("--schedule-id", type=int, help="global schedule id, e.g. 107")
+    p.add_argument("--prefix", help="event tag prefix, e.g. \"7/30\", to check tagging")
+    p.add_argument("--out", help="CSV of register-intent clickers, for `register --file`")
+    p.set_defaults(func=cmd_clicks)
+
+    p = sub.add_parser("smslist", help="high-intent SMS list for an imminent webinar")
+    p.add_argument("--prefix", required=True, help='event tag prefix, e.g. "7/30"')
+    p.add_argument("--count", type=int, default=300, help="how many targets to select")
+    p.add_argument("--batch", type=int, default=100, help="rows per output file")
+    p.add_argument("--since", default="2026-07-27", help="ISO date, start of the attention window")
+    p.add_argument("--until", default="2100-01-01", help="ISO date, end of the attention window")
+    p.add_argument("--out-dir", help="directory to write the batch CSVs into")
+    p.add_argument("--tag", help='tag to apply, e.g. "7/30 sms invite"')
+    p.add_argument("--apply", action="store_true", help="write the tag (default is a dry run)")
+    p.add_argument("--rescreen", action="store_true",
+                   help="re-check an already-tagged list and drop anyone who no "
+                        "longer qualifies, instead of selecting new targets")
+    p.set_defaults(func=cmd_smslist)
+
+    p = sub.add_parser("mirror-tag", help="copy a tag's membership into the SMS sub-account")
+    p.add_argument("--tag", required=True, help='tag to copy, e.g. "clicked 7/31 replay"')
+    p.add_argument("--rename", help="use a different tag name in the target location")
+    p.add_argument("--apply", action="store_true", help="write it (default is a dry run)")
+    p.set_defaults(func=cmd_mirror_tag)
+
+    p = sub.add_parser("untag", help="drop a campaign tag from anyone who has converted")
+    p.add_argument("--tag", required=True, help="tag to remove, e.g. \"8/6 replay lead\"")
+    p.add_argument("--if-tagged", action="append", required=True,
+                   help="remove only from contacts holding this tag (repeat for OR)")
+    p.add_argument("--main-only", action="store_true", help="skip the SMS sub-account")
+    p.add_argument("--apply", action="store_true", help="write it (default is a dry run)")
+    p.set_defaults(func=cmd_untag)
+
     p = sub.add_parser("reactivation")
     p.add_argument("--out-dir", help="directory to write the two CSV lists into")
     p.set_defaults(func=cmd_reactivation)
@@ -476,16 +843,6 @@ def main() -> int:
     p.add_argument("--limit", type=int)
     p.set_defaults(func=cmd_sendlist)
 
-    p = sub.add_parser("campaigns")
-    p.add_argument("--since", help="only sends on/after this ISO date, e.g. 2025-11-01")
-    p.add_argument("--min-recipients", type=int, default=campaigns.BULK_MIN_RECIPIENTS,
-                   help=f"ignore sends below this size (default {campaigns.BULK_MIN_RECIPIENTS:,})")
-    p.add_argument("--top", type=int, default=10)
-    p.add_argument("--by", choices=["open_rate", "click_rate", "cto_rate"],
-                   default="open_rate", help="metric to rank on")
-    p.add_argument("--out", help="CSV path for the full ranking")
-    p.set_defaults(func=cmd_campaigns)
-
     p = sub.add_parser("count"); add_filter_args(p); p.set_defaults(func=cmd_count)
 
     p = sub.add_parser("export")
@@ -494,34 +851,18 @@ def main() -> int:
     p.add_argument("--limit", type=int, help="stop after N records")
     p.set_defaults(func=cmd_export)
 
-    p = sub.add_parser("webinar", help="sync WebinarJam attendance into tags")
-    p.add_argument("--product", default="everwebinar",
-                   choices=["everwebinar", "webinarjam"],
-                   help="everwebinar for evergreen/just-in-time, webinarjam for live")
-    p.add_argument("--list", action="store_true",
-                   help="list webinars and their ids, then exit")
-    p.add_argument("--webinar-id", type=int, help="the webinar to sync")
-    p.add_argument("--prefix", default="everwebinar",
-                   help="tag namespace, e.g. 'everwebinar' or a date like '10/1'")
-    p.add_argument("--schedule",
-                   help="only registrants whose schedule contains this text, "
-                        "e.g. '1 Oct 2026' -- a live webinar id spans every session")
-    p.add_argument("--create", action="store_true",
-                   help="create contacts for registrants not already in GHL")
-    p.add_argument("--include-customers", action="store_true",
-                   help="also tag existing bot / flight path customers")
-    p.add_argument("--write", action="store_true",
-                   help="actually write; omit for a dry run")
-    p.set_defaults(func=cmd_webinar)
-
     args = parser.parse_args()
     try:
-        return args.func(GHLClient(), args) or 0
+        args.func(GHLClient(), args)
     except GHLError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except WebinarJamError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
+    return 0
 
 
 if __name__ == "__main__":

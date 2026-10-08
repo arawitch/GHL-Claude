@@ -43,13 +43,12 @@ class GHLScopeError(GHLError):
                               "re-issue the token. Contact endpoints are unaffected.")
 
 
-# GoHighLevel answers 401 for two unrelated conditions, and only one of them is
-# permanent:
-#   * a token that is expired, wrong, or missing a scope -- retrying never helps
-#   * a query that ran too long, returned as 401 {"message":"Command timed out"}
-# The second is transient and succeeds on a retry, so the body decides how a 401
-# is handled, not the status code.
-TIMEOUT_401 = "command timed out"
+# GoHighLevel answers 401 for three unrelated conditions and only one is
+# permanent, so the body decides how a 401 is handled, not the status code:
+#   * a query that ran too long -> {"message":"Command timed out"}
+#   * a spurious token rejection mid-run, on a token valid either side of it
+#   * a missing scope -> retrying never helps, and the fix is a new token
+TRANSIENT_401 = ("command timed out", "invalid private integration token")
 SCOPE_401 = "not authorized for this scope"
 
 
@@ -109,12 +108,27 @@ class GHLClient:
                 delay *= 2
                 continue
 
-            # 429, 5xx and a timed-out 401 are transient; everything else is a
-            # real answer.
+            # 429 and 5xx are transient; everything else is a real answer --
+            # except 401, which this API returns for three unrelated conditions,
+            # only one of which is permanent. Two are transient and recover on
+            # the next attempt with the same token:
+            #
+            #   {"message": "Command timed out"}                (slow query)
+            #   {"message": "Invalid Private Integration token"} (mid-run, on a
+            #       token that worked seconds before and seconds after)
+            #
+            # The second is the dangerous one: it reads as a revoked token, so it
+            # invites re-issuing credentials to fix a blip. On 2026-07-30 it
+            # failed 73 contact lookups in one sync run while the token was
+            # perfectly valid. A genuinely bad token still fails, just after the
+            # same bounded retries.
+            #
+            # The permanent one is a missing scope, handled below: retrying it
+            # never helps, so it raises immediately and carries the fix.
             body = resp.text
-            transient = (resp.status_code == 429 or resp.status_code >= 500
-                         or (resp.status_code == 401 and TIMEOUT_401 in body.lower()))
-            if transient:
+            transient_auth = (resp.status_code == 401
+                              and any(s in body.lower() for s in TRANSIENT_401))
+            if resp.status_code == 429 or resp.status_code >= 500 or transient_auth:
                 if attempt == attempts:
                     raise GHLError(resp.status_code, method, path, body)
                 time.sleep(float(resp.headers.get("Retry-After", delay)))

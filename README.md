@@ -57,9 +57,8 @@ for the parts it cannot reach rather than failing whole; `workflows` and
 
 ## Commands
 
-Everything here is **read-only except `webinar --write`**, which is the one
-command that edits contacts. Nothing sends an email or enrols anyone in a
-workflow.
+Commands that edit contacts say so and default to a dry run; everything else is
+read-only. Nothing sends an email.
 
 ```bash
 python3 cli.py info                       # account summary
@@ -70,9 +69,9 @@ python3 cli.py count  --tag "weekly newsletter subscriber" --mailable
 python3 cli.py export --tag "weekly newsletter subscriber" --mailable \
                       --out lists/newsletter.csv
 
-python3 cli.py webinar --list                      # webinar ids
-python3 cli.py webinar --webinar-id 7              # dry run, evergreen room
-python3 cli.py webinar --webinar-id 7 --write      # apply attendance tags
+python3 cli.py sync-webinar --product everwebinar --list        # webinar ids
+python3 cli.py sync-webinar --product everwebinar --webinar-id 7
+python3 cli.py sync-webinar --product everwebinar --webinar-id 7 --apply
 ```
 
 `--tag` repeats to mean OR. `--mailable` drops contacts with no email address
@@ -159,6 +158,292 @@ The tag list is hand-curated in `ghl/sending.py` and does not update itself. A
 new suppression tag added in the GHL UI will not be honoured until it is added
 there.
 
+## ⚠️ Before sending an email containing a one-click registration link
+
+**Turn UTM tracking OFF on that send.**
+
+GoHighLevel wraps links in its click tracker and appends its own UTM parameters.
+On the 2026-07-26 newsletter that produced:
+
+```
+https://link.msgsndr.com/email-tracking/d87b88b75f5
+  ?contactId={{contact.id}}&first_name={{contact.first_name}}
+  &last_name={{contact.last_name}}&email={{contact.email}}
+  &timezone=GMT-7&schedule_id=1
+  &utm_source=email&utm_medium=email marketing      <-- unencoded space
+```
+
+A raw space is not valid in a URL. Most clients tolerate it; strict corporate
+mail gateways may rewrite or reject the whole link. On that send, both
+registrations that recorded a click but never reached WebinarJam were corporate
+domains (`caduluth.com`, `otcservices.com`), while every consumer domain
+succeeded. Not proof, but the pattern fits.
+
+Checklist for any send carrying a one-click link:
+
+1. **UTM tracking off** for that campaign
+2. `schedule_id` matches the session number for that week (1, 2, 3 ...) -- this
+   is the *session* number, not the global schedule id the API uses
+3. Include a visible fallback beneath the one-click CTA:
+   `Didn't work? https://event.webinarjam.com/gyywz/register/088v6bgy`
+4. Send yourself a real test (not a preview) and click it, so merge fields
+   resolve and the redirect is exercised end to end
+
+After the send, find the clicks and recover anyone who did not reach WebinarJam:
+
+```bash
+python3 cli.py clicks --webinar-id 53 --schedule-id 107 --prefix "7/30" \
+                      --out lists/clicks.csv
+python3 cli.py register --webinar-id 53 --schedule-id 107 \
+                        --file lists/clicks.csv --apply
+python3 cli.py sync-webinar --webinar-id 53 --schedule-id 107 --apply
+```
+
+### Finding clicks is harder than it should be
+
+There is **no click-reporting endpoint**. `GET /emails/statistics` and every
+variation of it 404s, and `/contacts/search` rejects `lastEmailClickedAt`,
+`emailClicked`, `lastEmailOpenedAt` and friends as invalid fields. Click data is
+only reachable per contact, three hops deep:
+
+```
+/conversations/search?contactId=      -> conversation id
+/conversations/{id}/messages          -> message, meta.email.messageIds
+/conversations/messages/email/{id}    -> {"status": "clicked"}
+```
+
+`status` is authoritative: `delivered` / `opened` / `clicked`. Walking it for
+every recipient would be ~11,000 contacts, so `cli.py clicks` narrows the
+candidate set by tag first — the campaigns apply `opened/clicked webinar invite`
+on interaction, which bumps `dateUpdated`. Sampling confirmed the shortcut:
+contacts with no open/click tag returned `delivered` for every message.
+
+Four traps the command exists to handle:
+
+**A click is per message, not per contact.** Someone who clicked a stock-pick
+link in the newsletter and someone who clicked "Reserve My Seat" look identical
+at contact level. So clicks are attributed to a specific send, and only sends
+carrying a register link count as registration intent. Which sends those are is
+**detected, not assumed** — a hardcoded subject list breaks the moment a subject
+is edited in the UI, which is what happened to A3 this week.
+
+**Searching the HTML for `event.webinarjam.com` does not work.** GHL rewrites
+every link in a tracked send to `link.msgsndr.com`, and `nonTrackingDownloadUrl`
+returns a body **byte-identical** to the tracked one rather than a raw copy. The
+2026-07-26 newsletter carried a one-click register link and scored "no register
+link" — which would have dropped 23 clickers from review. Links are resolved one
+hop through the tracker instead:
+
+```
+https://link.msgsndr.com/email-tracking/d87b88b75f5
+  -> 302 https://event.webinarjam.com/gyywz/register/088v6bgy/1click
+```
+
+The tracker returns **403 to the default urllib User-Agent**, and that failure
+reads as "no register link" rather than as an error, so a browser UA is sent.
+
+**A click can be ambiguous even on a send that asks for registration.** If a
+send has a register link *and* something else clickable, `status: clicked` does
+not say which was clicked — there is no per-link data in the API. The 7/26
+newsletter had both a register link and a Loom video, so its clickers land in a
+third bucket rather than being guessed at. A send whose only links are the
+one-click and its own fallback is *not* ambiguous: both go to WebinarJam, so any
+click on it is registration intent.
+
+#### Resolving the ambiguous bucket: ask for the per-link report
+
+**The GHL UI has per-link click data that the API does not expose.** When the
+command reports an ambiguous bucket, do not guess and do not bulk-register —
+ask for the campaign's link-level click report, which lists name, address, click
+count and timestamp per link. On 2026-07-29 that collapsed 17 ambiguous
+newsletter clickers down to **one** genuine unregistered click. Registering all
+17 would have put 16 people who watched a Loom video into a webinar.
+
+That report is also better evidence than a single click flag, because it shows
+repeat clicks — the signature of a link that is not working. Two of the twelve
+newsletter register-link clickers clicked 3 and 7 times.
+
+**Click tracking off means no click data.** Turning tracking off protects the
+one-click link (see the UTM warning above) but makes clicks on that send
+unrecordable. That is the right trade: an untracked link is also unrewritten, so
+the one-click reaches WebinarJam directly. Absence of click data on an untracked
+send is not absence of clicks — check WebinarJam registrations instead.
+
+**`successCount` is unreliable on small sends.** The 23-recipient Track B send
+on 2026-07-29 reported `successCount: 0, failed: 0, error: 0` while every
+sampled recipient had actually received it. Verify small sends by looking for
+the message on a contact, not by reading the counter.
+
+## ⚠️ What actually drives clicks on this list
+
+The first Week 1 draft clicked at **0.07–0.13%**. The seven highest-clicking
+webinar invites in this location's send archive were pulled and read; they share
+a structure the draft had none of. Anything written for Track A should follow it.
+
+| | Their winners | The draft that failed |
+| --- | --- | --- |
+| Greeting | `Hey {{contact.first_name}},` | `Hi …` |
+| The problem | an observable market condition — *"One headline comes out... SPY rips."* | a maxim — *"the market rewards discipline"* |
+| Recognition | second-person fragments, one per line: *"You wait too long. / You enter too early. / You chase the move."* | none |
+| The turn | *"Sound familiar?"* | none |
+| The offer | a bulleted **"I'll walk you through:"** list | a paragraph |
+| CTAs | **two** — an inline text link mid-body, then a P.S. with a second | one button |
+| Subject | the time is in it: `Tomorrow at 2:`, `Will you be joining at 2?`, `Going live in 15 mins` | `The market rewards discipline` |
+
+Two things worth knowing before copying the formula:
+
+**The shortest emails click best.** `Will you be joining at 2?` and `Going live
+in 15 mins` are four and five short paragraphs with a single plain text link,
+and they outperform everything longer. Do not pad them.
+
+**The winners contain no performance figures.** This corrects an earlier warning
+here. The `5 trades. 5 wins.` and `$125 per contract` subject lines belong to
+*daily recap* sends to a ~3,100 list — not to the webinar invites carrying the
+11–23% campaign click rates. So the invite format can be copied wholesale
+without importing the earnings-claim problem, and there is no trade-off to make.
+
+Click rate is also downstream of open rate, which halved (20.6% → 11.15%) over
+the same period. Subject lines carrying a time and a question are what recovered
+it before. `previewText` on each template is now distinct from the subject
+rather than a copy of it, so the inbox line is not wasted repeating itself.
+
+## Deliverability: what is actually set up
+
+Verified from DNS on 2026-08-05, after closers reported their mail landing in
+spam from **both** GHL and Gmail, including emails with no links at all.
+
+| | `universityofoptions.com` | `mg.universityofoptions.com` |
+| --- | --- | --- |
+| MX | Google Workspace | Mailgun |
+| SPF | `include:_spf.google.com ~all` | `include:mailgun.org ~all` |
+| DKIM | `google._domainkey`, 2048-bit | `mailo._domainkey`, **1024-bit** |
+| DMARC | `p=quarantine`, reporting to mxtoolbox | inherits |
+| Sends | closers, 1:1 | all marketing, `From: dan@mg.…` |
+
+**Authentication is not the problem.** Both paths sign and align correctly, and
+neither domain is listed on Spamhaus DBL or SURBL.
+
+### Google Postmaster Tools, `universityofoptions.com`, 120 days to 2026-08-05
+
+| Metric | Reading |
+| --- | --- |
+| Domain reputation | **High**, flat across the whole window |
+| DKIM / SPF / DMARC | **100%** every day |
+| User-reported spam | ~0%, with brief spikes to 0.5% (Apr 13) and 0.3% (early Aug) |
+| IP reputation | ~50% Medium / 50% High Apr–Jun, **all High from July** |
+
+**This refutes an earlier hypothesis recorded here.** Having seen two
+independently authenticated paths both land in spam, the conclusion drawn was
+that the organizational domain's reputation was impaired and dragging every
+sender under it. Postmaster says otherwise: at Gmail this domain is in the best
+reputation band available, with essentially no spam complaints. The load
+argument below is still worth acting on for its own sake, but it is not
+evidence of a reputation problem, and it does not explain the closers.
+
+Two things follow, and both matter more than the original theory:
+
+1. **Postmaster only reports Gmail.** A domain can read High at Gmail while
+   Outlook, Yahoo or a corporate gateway filters it hard — and the corporate
+   gateways are exactly where the one-click failures clustered
+   (`caduluth.com`, `otcservices.com`, `fairwaymc.com`). Diagnosing the closers
+   means finding out which providers the complaining recipients are on. Gmail
+   has already been cleared.
+2. **The data is sparse.** Every panel carries "Data shown with missing
+   records", and the IP chart has gaps on most days, which is what Postmaster
+   looks like below its ~100 messages/day reporting threshold. So this is a
+   confident reading of a *thin* sample of the root domain's traffic.
+
+The send-volume load, unchanged as an observation:
+
+| Month | Sends | Delivered |
+| --- | ---: | ---: |
+| 2026-04 | 28 | 196,506 |
+| 2026-06 | 23 | 165,617 |
+| 2026-07 | 25 | 167,902 |
+
+~168k/month while the open rate fell 20.6% → 11.15% → 7.67%. Since that volume
+sends as `mg.`, its reputation lives on the **`mg.` Postmaster property**, which
+has not yet been read. Do not attribute the open-rate collapse to placement
+until it has been.
+
+### ⚠️ Do not move the closers onto `mg.`
+
+Three reasons, in order of how quickly they bite:
+
+1. **`mg.` has no inbox.** Its MX points at Mailgun. A closer sending from
+   `@mg.universityofoptions.com` has replies routed to Mailgun's inbound, not
+   their Gmail. They lose replies silently.
+2. `mg.` carries the complaint history of every bulk send. "Warmed" means it can
+   carry volume, not that it is trusted for personal mail.
+3. It inverts the point of the split, which is to keep bulk away from the domain
+   humans converse from.
+
+A closer domain has to be a **separately registered domain**, because reputation
+inherits within an org domain. A new subdomain of `universityofoptions.com`
+inherits the problem it is meant to escape.
+
+### Cheap fixes worth doing regardless
+
+- **The Mailgun DKIM key is 1024-bit.** The Google key on the root is 2048-bit.
+  Google's sender guidelines call for 2048; Mailgun supports it and it is a
+  dashboard toggle plus a DNS record swap.
+- **Check whether Mailgun has this account on a shared IP pool.** At ~168k/month
+  the volume is past the point where a dedicated IP is normally recommended. If
+  the reputation problem is IP-level rather than domain-level, a new domain does
+  not fix it — and that distinction is visible in Google Postmaster Tools, which
+  reports IP and domain reputation separately.
+
+## Campaign audiences
+
+Two builders, and the difference between them is the point.
+
+| Module | Ranks by | Because the ask is |
+| --- | --- | --- |
+| `ghl/replaylead.py` | click behaviour, then opens | a click on a replay link |
+| `ghl/chartlead.py` | **how recently they attended a webinar**, then clicks | attending a webinar |
+
+Tier order should follow the action being requested. Ranking a replay chase by
+attendance, or a webinar invite by clicks, puts the wrong people at the top.
+
+### Attendance tags are the only real recency signal here
+
+Engagement tags carry no timestamp, and `dateUpdated` is not a substitute: a
+bulk send or a tagging run rewrites it across the whole list. On 2026-08-05 a
+60-day and a 90-day window returned an identical **11,212** for that reason.
+
+Attendance tags are dated *by name* -- `7/30 attended`, `attended 6-29`,
+`3/12 attended` -- so they record when someone actually turned up, and no amount
+of later sending overwrites it. `chartlead.py` groups them into recent / this
+year / older, and puts undated tags (`everwebinar attended` and friends) in the
+oldest tier rather than guessing them into a recent one.
+
+### Exclusions follow the funnel, not a flat customer rule
+
+The ladder is indicators → setup call → bots → Options Navigator, so anyone
+holding *any* rung is excluded -- that is `OWNS_PITCHED_PRODUCT`. Front-end
+buyers (`njc frontend buyer`, `purchased workshop`, `prop bootcamp member`, the
+futures purchases) are kept deliberately: they have paid before and own no
+indicator package, which makes them among the strongest names on the list. See
+`smstarget.py` for the split and why `cancelled masters program` counts as a
+former rather than current customer.
+
+Built 2026-08-05 for the chart-makeover webinar:
+
+| Tier | Count |
+| --- | ---: |
+| 1 attended recently + clicked | 25 |
+| 2 attended recently | 26 |
+| 3 attended this year + clicked | 126 |
+| 4 attended this year | 81 |
+| 5 attended, older or undated | 477 |
+| 6 registered but never attended | 1,637 |
+| **tiers 1-6, tagged `chart makeover invite`** | **2,372** |
+| 7-8 email engagement, no webinar history | 9,395 |
+
+Tiers 7-8 exist in the export but are not tagged. Given ~168k sends/month
+against an 8% open rate, expanding into people with no webinar history at all
+should be a deliberate decision rather than a default.
+
 ## Weekly webinar send plan
 
 ```bash
@@ -175,15 +460,25 @@ carrying that registrant's unique join link. Duplicating those in GHL would
 double-message the people most likely to attend, and GHL cannot reproduce the
 per-registrant link. So the default plan cedes pre-event Track A to WebinarJam:
 
-| Slot | Track | Audience | Sent by |
-| --- | --- | --- | --- |
-| mon-invite-1 | B | engaged list, minus registrants | GHL |
-| tue-invite-2 | B | engaged list, minus registrants | GHL |
-| *48h / 24h / 1h / 15min* | A | registrants | **WebinarJam** |
-| thu-last-call | B | engaged list, minus registrants | GHL |
-| thu-replay | post | no-shows | GHL |
-| fri-replay-final | post | no-shows | GHL |
-| fri-attendee-next | post | attendees | GHL |
+| Slot | Track | Audience | Template | Sent by |
+| --- | --- | --- | --- | --- |
+| mon-invite-1 | B | engaged list, minus registrants | `W1-A1-Mon-NotReg` | GHL |
+| tue-invite-2 | B | engaged list, minus registrants | `W1-A2-Tue-NotReg` | GHL |
+| wed-invite-3 | B | engaged list, minus registrants | `W1-A3-Wed-NotReg` | GHL |
+| wed-registered-primer | A | registrants | `W1-B1-WedAM-Registered` | GHL |
+| *48h / 24h / 1h / 15min* | A | registrants | — | **WebinarJam** |
+| thu-am-invite | B | engaged list, minus registrants | `W1-A4-Thu8am-NotReg` | GHL |
+| thu-noon-invite | B | engaged list, minus registrants | `W1-A5-ThuNoon-NotReg` | GHL |
+| thu-15min-invite | B | engaged list, minus registrants | `W1-A6-Thu145-NotReg` | GHL |
+| thu-replay | post | no-shows | `W1-D1-ThuPM-NoShow` | GHL |
+| fri-replay-final | post | no-shows | `W1-D2-Fri-NoShow` | GHL |
+| fri-attendee-next | post | attendees | `W1-C1` / `W1-C2` | GHL |
+
+Three of the six invites land on Thursday. That is not aggression for its own
+sake — it is the shape of every above-average event in the archive. The Thursday
+midday and 15-minute sends are the two shortest emails on the list and among the
+best-clicking. `wed-registered-primer` goes to registrants but carries no join
+link and no logistics, so it does not collide with WebinarJam's reminders.
 
 GHL keeps exactly what WebinarJam does not do: persuading people who have not
 registered, and everything after the event ends. Pass `--reminders ghl` to add
@@ -336,16 +631,34 @@ comparison looked like drift.
 Worth keeping in mind whenever a figure here moves unexpectedly: check which
 `GHL_LOCATION_ID` produced it before concluding the account changed.
 
-## Webinar attendance sync
+### Two products, two APIs, one key
 
-Attendance used to arrive as a CSV exported from the WebinarJam dashboard and
-tagged by hand after every event. `cli.py webinar` does it from the API instead,
-and `.github/workflows/webinar-sync.yml` runs it hourly.
+`cli.py sync-webinar --product` picks between them:
 
-**There is no webhook.** Several third-party guides describe a
-`POST /webhooks` endpoint with a bearer token; it does not exist. Probing with a
-deliberately wrong path settles it — a fake route returns a 404 HTML page, while
-every real route returns `{"errors":{"api_key":[...]}}`:
+| | `webinarjam` | `everwebinar` |
+| --- | --- | --- |
+| What | one-off live events | evergreen and just-in-time rooms |
+| This account | id **2**, "Bot Webinar" | id **7**, "Bot Webinar" |
+| Schedules | dated sessions with global ids | the literal string `Just in time` |
+| Timezone set on it | `America/Los_Angeles` | **`America/New_York`** |
+
+A `webinar_id` only means something inside its own product, so id 2 and id 7 are
+unrelated despite sharing a name. A live id spans **every session ever scheduled
+under it** — id 2 holds both the 9/24 and 10/1 events in one list of 198 — so
+`--schedule-id` is needed to tag one event rather than both. `--list` prints the
+ids, and omitting `--schedule-id` prints the schedules.
+
+An evergreen room has no dated session, so the `has_run` / `--settle-minutes`
+machinery is skipped for it: a just-in-time session is already over for whoever
+registered. It gets one stable `everwebinar …` tag namespace rather than a
+per-date prefix, which would mint new tags daily.
+
+### There is no webhook
+
+Several third-party guides describe a `POST /webhooks` endpoint taking a bearer
+token. It does not exist. Probing with a deliberately wrong path settles it in
+both directions — a fake route returns a 404 HTML page, while every real route
+returns `{"errors":{"api_key":[...]}}`:
 
 | Route | Exists |
 | --- | --- |
@@ -355,47 +668,59 @@ every real route returns `{"errors":{"api_key":[...]}}`:
 | `POST /{product}/webhooks` | no (404) |
 | `POST /{product}/zzznotreal` — control | no (404) |
 
-So attendance is **polled, not pushed**. `/registrants` carries the same fields
-as the dashboard export: `attended_live`, `time_live`, `attended_replay`,
-`time_replay`, `purchased_live`, `revenue_live`.
+So attendance is **polled, not pushed**, which is why this is a cron job rather
+than a trigger. `/registrants` carries the same fields as the dashboard CSV:
+`attended_live`, `time_live`, `attended_replay`, `time_replay`,
+`purchased_live`, `revenue_live`.
 
-`{product}` is `webinarjam` for live events or `everwebinar` for evergreen and
-just-in-time rooms. They are separate APIs behind one key, and a `webinar_id`
-only means something within its own product. A live id spans **every session
-ever scheduled under it**, so `--schedule "1 Oct 2026"` is required to tag one
-event rather than all of them.
+### A regenerated key fails in a way that does not look like a key problem
 
-Three judgements are built in, each from getting it wrong by hand first:
+An old key answers `401 {"api_key":"API access is not allowed!"}` — which reads
+like a plan or permissions issue, not a stale credential. Regenerating the key
+in WebinarJam invalidates every copy of it immediately. The environment's
+`WEBINARJAM_API_KEY` was found revoked this way on 2026-10-08, meaning the sync
+had been failing silently; `_post` now names the likely cause in the error.
 
-- **Live beats replay.** Both flags can be `Yes`; someone who sat through the
-  live session and later reopened the replay is tagged a live attendee.
-- **A zero-second view is not a view.** Roughly a third of "replay watchers"
-  log `00:00:00` — they opened the room and left. Under two minutes is tagged
-  `absent`, because putting them in the warmest cohort is how a no-show ends up
-  getting the most aggressive follow-up.
-- **Bot ownership is five tags, not nine.** `new bot user` (163 contacts, zero
-  Options Bot orders, 121 of them also `fx customer`) is the retired FX bot;
-  `new combo purchase` covers bundles that are not all bot bundles; `bot
-  installed` is empty. `flight path attended` / `absent` are attendance, not
-  ownership. See the suppression traps section — this is the same failure mode.
-
-Verified against a month of hand-tagging: run against the 10/1 live event it
-independently reproduced 48 attendees, 22 replay viewers and 38 no-shows, and
-flagged the one registrant with no GHL record — a $3,800 bot customer carrying
-no ownership tag.
+`WJ_API_KEY` is accepted as an alias for the same variable.
 
 ### Running it on a schedule
 
-The Action needs five repository secrets:
+`.github/workflows/webinar-sync.yml` runs hourly at :17. Secrets:
 
 | Secret | What |
 | --- | --- |
-| `WJ_API_KEY` | WebinarJam → My Webinars → Advanced Settings → API custom integration |
-| `GHL_API_KEY` / `GHL_LOCATION_ID` | email sub-account (needs `contacts.write`) |
+| `WEBINARJAM_API_KEY` (or `WJ_API_KEY`) | WebinarJam → My Webinars → Advanced Settings → API custom integration |
+| `GHL_API_KEY` / `GHL_LOCATION_ID` | email sub-account; needs `contacts.write` |
 | `GHL_SMS_API_KEY` / `GHL_SMS_LOCATION_ID` | SMS sub-account; omit to sync one side only |
 
-Scheduled runs write. `workflow_dispatch` defaults to a dry run so a change can
-be checked before it touches anything.
+Scheduled runs target the evergreen room and write. `workflow_dispatch` defaults
+to a dry run and can target a live event by schedule id.
+
+**A scheduled workflow only fires from the repository's default branch.** On a
+non-default branch the cron never runs and `workflow_dispatch` shows no button,
+which is indistinguishable from a workflow that runs and finds nothing.
+
+### What the attendance tags do and do not mean
+
+- **A zero-second view is not a view.** 4 of the 10 10/1 replay viewers logged
+  `00:00:00` — they opened the room and left. Under `MIN_VIEW_SECONDS` (120) the
+  role is not granted, because replay watchers convert at 6.5% against 1.4% for
+  registrants who watched nothing, so a zero-second open in the replay cohort
+  hands a no-show the warmest follow-up in the sequence.
+- **Attendance is not written before the event.** Covered under the send plan:
+  `attended_live` is `No` for everyone until the session runs.
+- **Customers are skipped, which makes the tags an incomplete attendance
+  record.** `skip_tags` defaults to `smstarget.OWNS_PITCHED_PRODUCT`, so anyone
+  who already owns what the webinar sells is left untagged entirely. On the 10/1
+  event that is the difference between 48 real attendees and 16 tagged ones.
+  That is deliberate — it keeps owners out of sequences keyed on the tag — but
+  it means `10/1 attended` answers "who attended and is still a prospect", not
+  "who attended". `--include-customers` turns it off.
+
+Verified against a month of hand-tagging: on the 10/1 live event the sync
+independently reproduced the attendance split and flagged the one registrant
+with no GHL contact record — a $3,800 bot customer carrying no ownership tag
+anywhere, found by hand only via the order table.
 
 ## What the API can and cannot do
 
