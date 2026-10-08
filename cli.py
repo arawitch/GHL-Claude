@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import os
 import sys
 from pathlib import Path
 
@@ -372,6 +373,54 @@ def cmd_export(client: GHLClient, args) -> None:
     print(f"wrote {written:,} row(s) to {args.out}")
 
 
+def cmd_webinar(client: GHLClient, args) -> int | None:
+    """Sync WebinarJam/EverWebinar attendance into tags, in both sub-accounts."""
+    from ghl import attendance
+    from ghl.webinarjam import WebinarJamClient, WebinarJamError
+
+    try:
+        wj = WebinarJamClient(product=args.product)
+    except WebinarJamError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.list:
+        for w in wj.webinars():
+            print(f"  id={w['webinar_id']:<4} hash={w.get('webinar_hash','?'):<10} "
+                  f"{w.get('name','?')}  schedules={w.get('schedules')}")
+        return 0
+
+    # The second sub-account is optional: without its credentials this still
+    # works, it just cannot see history or write tags on that side.
+    accounts = [("EMAIL", client)]
+    alt_key = os.environ.get("GHL_SMS_API_KEY")
+    alt_loc = os.environ.get("GHL_SMS_LOCATION_ID")
+    if alt_key and alt_loc:
+        accounts.append(("SMS", GHLClient(alt_key, alt_loc)))
+    else:
+        print("note: GHL_SMS_API_KEY/GHL_SMS_LOCATION_ID unset -- "
+              "syncing the email sub-account only", file=sys.stderr)
+
+    rep = attendance.sync(wj, args.webinar_id, args.prefix, accounts,
+                          skip_customers=not args.include_customers,
+                          create_missing=args.create,
+                          schedule_contains=args.schedule,
+                          dry_run=not args.write)
+    mode = "WROTE" if args.write else "dry run"
+    print(f"\n{mode}: {rep['registrants']:,} registrant(s) on "
+          f"{args.product} webinar {args.webinar_id}")
+    print(f"  by state        {rep['by_state']}")
+    print(f"  tags written    {rep['written']:,}")
+    print(f"  contacts made   {rep['created']:,}")
+    print(f"  already tagged  {rep['already_tagged']:,}")
+    print(f"  skipped (owns)  {rep['skipped_customer']:,}")
+    print(f"  not in GHL      {rep['not_found']:,}")
+    print(f"  failed          {rep['failed']:,}")
+    for d in rep["detail"][:10]:
+        print(f"    ! {d}")
+    return 1 if rep["failed"] else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -444,6 +493,26 @@ def main() -> int:
     p.add_argument("--out", required=True, help="CSV output path")
     p.add_argument("--limit", type=int, help="stop after N records")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("webinar", help="sync WebinarJam attendance into tags")
+    p.add_argument("--product", default="everwebinar",
+                   choices=["everwebinar", "webinarjam"],
+                   help="everwebinar for evergreen/just-in-time, webinarjam for live")
+    p.add_argument("--list", action="store_true",
+                   help="list webinars and their ids, then exit")
+    p.add_argument("--webinar-id", type=int, help="the webinar to sync")
+    p.add_argument("--prefix", default="everwebinar",
+                   help="tag namespace, e.g. 'everwebinar' or a date like '10/1'")
+    p.add_argument("--schedule",
+                   help="only registrants whose schedule contains this text, "
+                        "e.g. '1 Oct 2026' -- a live webinar id spans every session")
+    p.add_argument("--create", action="store_true",
+                   help="create contacts for registrants not already in GHL")
+    p.add_argument("--include-customers", action="store_true",
+                   help="also tag existing bot / flight path customers")
+    p.add_argument("--write", action="store_true",
+                   help="actually write; omit for a dry run")
+    p.set_defaults(func=cmd_webinar)
 
     args = parser.parse_args()
     try:

@@ -57,8 +57,9 @@ for the parts it cannot reach rather than failing whole; `workflows` and
 
 ## Commands
 
-All commands here are **read-only**. Nothing sends an email, edits a contact,
-or enrols anyone in a workflow.
+Everything here is **read-only except `webinar --write`**, which is the one
+command that edits contacts. Nothing sends an email or enrols anyone in a
+workflow.
 
 ```bash
 python3 cli.py info                       # account summary
@@ -68,6 +69,10 @@ python3 cli.py schedules                  # existing email campaign schedules
 python3 cli.py count  --tag "weekly newsletter subscriber" --mailable
 python3 cli.py export --tag "weekly newsletter subscriber" --mailable \
                       --out lists/newsletter.csv
+
+python3 cli.py webinar --list                      # webinar ids
+python3 cli.py webinar --webinar-id 7              # dry run, evergreen room
+python3 cli.py webinar --webinar-id 7 --write      # apply attendance tags
 ```
 
 `--tag` repeats to mean OR. `--mailable` drops contacts with no email address
@@ -330,6 +335,67 @@ comparison looked like drift.
 
 Worth keeping in mind whenever a figure here moves unexpectedly: check which
 `GHL_LOCATION_ID` produced it before concluding the account changed.
+
+## Webinar attendance sync
+
+Attendance used to arrive as a CSV exported from the WebinarJam dashboard and
+tagged by hand after every event. `cli.py webinar` does it from the API instead,
+and `.github/workflows/webinar-sync.yml` runs it hourly.
+
+**There is no webhook.** Several third-party guides describe a
+`POST /webhooks` endpoint with a bearer token; it does not exist. Probing with a
+deliberately wrong path settles it — a fake route returns a 404 HTML page, while
+every real route returns `{"errors":{"api_key":[...]}}`:
+
+| Route | Exists |
+| --- | --- |
+| `POST /{product}/webinars`, `/webinar`, `/register` | yes |
+| `POST /{product}/registrants` — **registrants *and* attendance** | yes |
+| `POST /{product}/attendees` | no (404) |
+| `POST /{product}/webhooks` | no (404) |
+| `POST /{product}/zzznotreal` — control | no (404) |
+
+So attendance is **polled, not pushed**. `/registrants` carries the same fields
+as the dashboard export: `attended_live`, `time_live`, `attended_replay`,
+`time_replay`, `purchased_live`, `revenue_live`.
+
+`{product}` is `webinarjam` for live events or `everwebinar` for evergreen and
+just-in-time rooms. They are separate APIs behind one key, and a `webinar_id`
+only means something within its own product. A live id spans **every session
+ever scheduled under it**, so `--schedule "1 Oct 2026"` is required to tag one
+event rather than all of them.
+
+Three judgements are built in, each from getting it wrong by hand first:
+
+- **Live beats replay.** Both flags can be `Yes`; someone who sat through the
+  live session and later reopened the replay is tagged a live attendee.
+- **A zero-second view is not a view.** Roughly a third of "replay watchers"
+  log `00:00:00` — they opened the room and left. Under two minutes is tagged
+  `absent`, because putting them in the warmest cohort is how a no-show ends up
+  getting the most aggressive follow-up.
+- **Bot ownership is five tags, not nine.** `new bot user` (163 contacts, zero
+  Options Bot orders, 121 of them also `fx customer`) is the retired FX bot;
+  `new combo purchase` covers bundles that are not all bot bundles; `bot
+  installed` is empty. `flight path attended` / `absent` are attendance, not
+  ownership. See the suppression traps section — this is the same failure mode.
+
+Verified against a month of hand-tagging: run against the 10/1 live event it
+independently reproduced 48 attendees, 22 replay viewers and 38 no-shows, and
+flagged the one registrant with no GHL record — a $3,800 bot customer carrying
+no ownership tag.
+
+### Running it on a schedule
+
+The Action needs five repository secrets:
+
+| Secret | What |
+| --- | --- |
+| `WJ_API_KEY` | WebinarJam → My Webinars → Advanced Settings → API custom integration |
+| `GHL_API_KEY` / `GHL_LOCATION_ID` | email sub-account (needs `contacts.write`) |
+| `GHL_SMS_API_KEY` / `GHL_SMS_LOCATION_ID` | SMS sub-account; omit to sync one side only |
+
+Scheduled runs write. `workflow_dispatch` defaults to a dry run so a change can
+be checked before it touches anything.
 
 ## What the API can and cannot do
 

@@ -1,0 +1,60 @@
+name: Sync webinar attendance to GHL
+
+# WebinarJam has no webhooks -- there is no /webhooks route and the official API
+# docs list none -- so attendance has to be polled. Hourly is plenty: the
+# just-in-time room runs sessions continuously and nothing downstream needs
+# sub-hour freshness.
+on:
+  schedule:
+    - cron: "17 * * * *"      # :17 rather than :00, which is when everything else runs
+  workflow_dispatch:
+    inputs:
+      product:
+        description: everwebinar (evergreen / JIT) or webinarjam (live)
+        type: choice
+        options: [everwebinar, webinarjam]
+        default: everwebinar
+      webinar_id:
+        description: webinar id within that product
+        default: "7"
+      prefix:
+        description: tag namespace, e.g. everwebinar or a date like 10/1
+        default: everwebinar
+      schedule:
+        description: "optional: only this session, e.g. '1 Oct 2026'"
+        default: ""
+      write:
+        description: write tags (unchecked = dry run)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      - name: Sync
+        env:
+          WJ_API_KEY: ${{ secrets.WJ_API_KEY }}
+          GHL_API_KEY: ${{ secrets.GHL_API_KEY }}
+          GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+          GHL_SMS_API_KEY: ${{ secrets.GHL_SMS_API_KEY }}
+          GHL_SMS_LOCATION_ID: ${{ secrets.GHL_SMS_LOCATION_ID }}
+        run: |
+          python3 cli.py webinar \
+            --product "${{ github.event.inputs.product || 'everwebinar' }}" \
+            --webinar-id "${{ github.event.inputs.webinar_id || '7' }}" \
+            --prefix "${{ github.event.inputs.prefix || 'everwebinar' }}" \
+            ${{ github.event.inputs.schedule && format('--schedule "{0}"', github.event.inputs.schedule) || '' }} \
+            --create \
+            ${{ (github.event_name == 'schedule' || github.event.inputs.write == 'true') && '--write' || '' }}

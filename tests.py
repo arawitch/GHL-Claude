@@ -15,7 +15,8 @@ from __future__ import annotations
 import time
 import types
 
-from ghl import campaigns, reactivation, segments, sending, weekly
+from ghl import attendance, campaigns, reactivation, segments, sending, weekly
+from ghl import webinarjam
 from ghl.client import GHLClient, GHLError, GHLScopeError
 
 FAILURES: list[str] = []
@@ -290,6 +291,62 @@ def test_bulk_threshold_and_counter_flag() -> None:
           campaigns.has_usable_counters(v2) is True)
 
 
+def test_live_attendance_wins_over_replay():
+    """Both flags can be "Yes"; the live cohort is the one the revenue measures."""
+    both = {"attended_live": "Yes", "attended_replay": "Yes",
+            "time_live": "00:45:00", "time_replay": "00:10:00"}
+    check("a both-flags registrant counts as attended, not replay",
+          webinarjam.state_of(both) == "attended", webinarjam.state_of(both))
+    check("replay-only counts as replay",
+          webinarjam.state_of({"attended_live": "No", "attended_replay": "Yes"}) == "replay")
+    check("neither counts as absent",
+          webinarjam.state_of({"attended_live": "No", "attended_replay": "No"}) == "absent")
+
+
+def test_zero_watch_time_is_not_a_watcher():
+    """A third of "replay watchers" log 00:00:00 -- they opened the room and left.
+
+    Tagging them as watchers would put no-shows into the warmest cohort.
+    """
+    opened_and_left = {"attended_replay": "Yes", "time_replay": "00:00:00"}
+    check("a 0-second replay view is tagged absent",
+          attendance.tags_for("replay", "10/1", opened_and_left) == ["10/1 absent"],
+          str(attendance.tags_for("replay", "10/1", opened_and_left)))
+    real = {"attended_replay": "Yes", "time_replay": "00:25:00"}
+    check("a 25-minute replay view is tagged replay",
+          attendance.tags_for("replay", "10/1", real) == ["10/1 replay"])
+
+
+def test_bot_owner_set_excludes_the_retired_fx_tags():
+    """"new bot user" is the retired FX bot: 163 contacts, zero bot orders.
+
+    Asserted as literals rather than against the constant, so widening the
+    constant cannot quietly make this pass.
+    """
+    for wrong in ("new bot user", "new bot", "bot installed", "new combo purchase",
+                  "bot web invite", "flight path attended", "flight path absent"):
+        check(f"{wrong!r} is not treated as ownership",
+              wrong not in attendance.BOT_OWNER_TAGS | attendance.FLIGHT_PATH_TAGS)
+    check("the five validated bot tags are all present",
+          {"options bot sale", "options bot presale", "options auto trader",
+           "option and bot combo", "option bot combo"} == set(attendance.BOT_OWNER_TAGS),
+          str(sorted(attendance.BOT_OWNER_TAGS)))
+
+
+def test_phone_normalisation_rejects_junk_and_fixes_double_country_code():
+    """The registration form accepts free text, and WJ prepends +1 blindly."""
+    f = webinarjam.phone_of
+    check("a plain 10-digit US number normalises",
+          f({"phone_country_code": "+1", "phone_number": "704-779-5005"}) == "+17047795005")
+    check("a survey answer in the phone field is rejected",
+          f({"phone_number": "Iwanttobringinextracashbytradingoptions"}) is None)
+    check("a bare hyphen is rejected", f({"phone_number": "-"}) is None)
+    check("a truncated number is rejected",
+          f({"phone_country_code": "+1", "phone_number": "3006"}) is None)
+    check("a non-US country code is not given a leading 1",
+          f({"phone_country_code": "+44", "phone_number": "7932149848"}) == "+447932149848")
+
+
 def main() -> int:
     for fn in [test_401_is_two_different_errors,
                test_email_dnd_covers_every_on_status,
@@ -302,7 +359,11 @@ def main() -> int:
                test_metric_extraction_is_shape_tolerant,
                test_ranking_excludes_rather_than_zeroes_missing_data,
                test_zero_delivery_does_not_crash_or_flatter,
-               test_bulk_threshold_and_counter_flag]:
+               test_bulk_threshold_and_counter_flag,
+               test_live_attendance_wins_over_replay,
+               test_zero_watch_time_is_not_a_watcher,
+               test_bot_owner_set_excludes_the_retired_fx_tags,
+               test_phone_normalisation_rejects_junk_and_fixes_double_country_code]:
         fn()
     print()
     if FAILURES:
