@@ -82,6 +82,9 @@ class SyncReport:
     tags_removed: dict[str, int] = field(default_factory=dict)
     # Registrants with no contact record, and what was done about it.
     created: int = 0
+    # Contacts reached by more than one registration in this run, whose roles
+    # were merged rather than allowed to overwrite each other.
+    merged_registrations: int = 0
     # Found only because a create collided with an existing record.
     matched_by_duplicate: int = 0
 
@@ -162,103 +165,6 @@ def create_contact(client: GHLClient, email: str, row: dict,
     return (body.get("contact") or {}).get("id")
 
 
-def _tag_in(ghl: GHLClient, email: str, wanted: list[str], apply: bool,
-            report: SyncReport, label: str,
-            owner_tags: set[str] | None = None,
-            prospect_tag: str | None = None,
-            stale_tags: list[str] | None = None,
-            row: dict | None = None, prefix: str = "",
-            create_missing: bool = False) -> bool:
-    """Reconcile every record holding this address in one location.
-
-    Three things happen per record, in order:
-
-      1. the attendance tags in `wanted` are asserted -- for everyone, owner or
-         not, because they record what happened;
-      2. `prospect_tag` is granted only if the record holds none of
-         `owner_tags`, which is where the marketing decision lives;
-      3. any tag in `stale_tags` is removed, because the current data
-         contradicts it. Scoped to this event's prefix only.
-
-    Returns True if a record was found or created.
-    """
-    try:
-        contacts = find_contacts(ghl, email, phone_of(row) if row else None)
-    except GHLError as exc:
-        report.errors.append(f"[{label}] {email}: lookup failed - {exc}")
-        return False
-
-    if not contacts:
-        if not (create_missing and row is not None):
-            return False
-        tags = list(wanted) + ([prospect_tag] if prospect_tag else [])
-        if not apply:
-            report.created += 1
-            for tag in tags:
-                key = tag if label == "main" else f"{tag} [{label}]"
-                report.tags_applied[key] = report.tags_applied.get(key, 0) + 1
-            return True
-        try:
-            create_contact(ghl, email, row, tags, prefix)
-            report.created += 1
-            for tag in tags:
-                key = tag if label == "main" else f"{tag} [{label}]"
-                report.tags_applied[key] = report.tags_applied.get(key, 0) + 1
-            return True
-        except GHLError as exc:
-            # The duplicate rejection names the record it collided with, which
-            # means the registrant does exist -- under another address or on a
-            # number this lookup did not reach. Tag that record instead of
-            # reporting a miss and losing them.
-            cid = _duplicate_contact_id(exc)
-            if cid:
-                try:
-                    add_tags(ghl, cid, tags)
-                    for tag in tags:
-                        key = tag if label == "main" else f"{tag} [{label}]"
-                        report.tags_applied[key] = report.tags_applied.get(key, 0) + 1
-                    report.matched_by_duplicate += 1
-                    return True
-                except GHLError as inner:
-                    report.errors.append(f"[{label}] {email}: tagging the "
-                                         f"duplicate {cid} failed - {inner}")
-                    return False
-            report.errors.append(f"[{label}] {email}: create failed - {exc}")
-            return False
-
-    for contact in contacts:
-        existing = set(contact.get("tags") or [])
-        lower = {t.lower() for t in existing}
-        this = list(wanted)
-        if prospect_tag:
-            if owner_tags and lower & owner_tags:
-                report.skipped[label] = report.skipped.get(label, 0) + 1
-            else:
-                this.append(prospect_tag)
-
-        for tag in this:
-            bucket = report.already_tagged if tag in existing else report.tags_applied
-            key = tag if label == "main" else f"{tag} [{label}]"
-            bucket[key] = bucket.get(key, 0) + 1
-        missing = [t for t in this if t not in existing]
-        if missing and apply:
-            try:
-                add_tags(ghl, contact["id"], missing)
-            except GHLError as exc:
-                report.errors.append(f"[{label}] {email}: tagging failed - {exc}")
-
-        drop = [t for t in (stale_tags or []) if t in existing]
-        for tag in drop:
-            key = tag if label == "main" else f"{tag} [{label}]"
-            report.tags_removed[key] = report.tags_removed.get(key, 0) + 1
-        if drop and apply:
-            try:
-                remove_tags(ghl, contact["id"], drop)
-            except GHLError as exc:
-                report.errors.append(f"[{label}] {email}: untagging failed - {exc}")
-    return True
-
-
 def mirror_tag(source: GHLClient, target: GHLClient, tag: str, apply: bool,
                new_name: str | None = None) -> dict[str, int]:
     """Copy a tag's membership from one location into another.
@@ -310,6 +216,66 @@ def mirror_tag(source: GHLClient, target: GHLClient, tag: str, apply: bool,
     return counts
 
 
+def _write_one(ghl: GHLClient, contact: dict, wanted: list[str], apply: bool,
+               report: SyncReport, label: str, owner_tags: set[str],
+               prospect_tag: str | None, stale_tags: list[str]) -> None:
+    """Assert `wanted` on one record, grant the prospect tag, drop the stale."""
+    existing = set(contact.get("tags") or [])
+    lower = {t.lower() for t in existing}
+    this = list(wanted)
+    if prospect_tag:
+        if owner_tags and lower & owner_tags:
+            report.skipped[label] = report.skipped.get(label, 0) + 1
+        else:
+            this.append(prospect_tag)
+
+    for tag in this:
+        bucket = report.already_tagged if tag in existing else report.tags_applied
+        key = tag if label == "main" else f"{tag} [{label}]"
+        bucket[key] = bucket.get(key, 0) + 1
+    missing = [t for t in this if t not in existing]
+    if missing and apply:
+        try:
+            add_tags(ghl, contact["id"], missing)
+        except GHLError as exc:
+            report.errors.append(f"[{label}] {contact['id']}: tagging failed - {exc}")
+
+    drop = [t for t in stale_tags if t in existing]
+    for tag in drop:
+        key = tag if label == "main" else f"{tag} [{label}]"
+        report.tags_removed[key] = report.tags_removed.get(key, 0) + 1
+    if drop and apply:
+        try:
+            remove_tags(ghl, contact["id"], drop)
+        except GHLError as exc:
+            report.errors.append(f"[{label}] {contact['id']}: untagging failed - {exc}")
+
+
+def _create_one(ghl: GHLClient, email: str, row: dict, tags: list[str],
+                prefix: str, apply: bool, report: SyncReport, label: str) -> None:
+    """Create a record for a registrant no lookup could find."""
+    if not apply:
+        report.created += 1
+        return
+    try:
+        create_contact(ghl, email, row, tags, prefix)
+        report.created += 1
+    except GHLError as exc:
+        # The duplicate rejection names the record it collided with, so the
+        # registrant does exist -- on a field this lookup did not reach. Tag
+        # that record rather than lose them.
+        cid = _duplicate_contact_id(exc)
+        if not cid:
+            report.errors.append(f"[{label}] {email}: create failed - {exc}")
+            return
+        try:
+            add_tags(ghl, cid, tags)
+            report.matched_by_duplicate += 1
+        except GHLError as inner:
+            report.errors.append(
+                f"[{label}] {email}: tagging the duplicate {cid} failed - {inner}")
+
+
 def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int,
          schedule_id: int | None,
          prefix: str, stayed_minutes: int = 0, apply: bool = False,
@@ -337,38 +303,83 @@ def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int,
     report = SyncReport()
     owner_tags = {t.lower() for t in (skip_tags or [])}
 
-    for row in wj.registrants(webinar_id, schedule_id,
-                              schedule_contains=schedule_contains):
-        report.registrants += 1
+    rows = list(wj.registrants(webinar_id, schedule_id,
+                               schedule_contains=schedule_contains))
+    report.registrants = len(rows)
+
+    # One person can register twice under different addresses, and if those
+    # share a phone they resolve to a single contact record. Writing each row
+    # independently then lets them fight: Ricky Puckett registered for 10/1 as
+    # cpdaltexuoo@gmail.com (attended, 50 minutes) and cpdaltex@gmail.com
+    # (absent) on the same number, and only the second has a GHL record. Row by
+    # row, one write set "attended" and the next removed it -- last row wins,
+    # and the 50 minutes was the half that lost.
+    #
+    # So resolve everything first, union the roles of every row landing on the
+    # same record, and write once. Attendance is a union by nature: if any
+    # registration attended, the person attended.
+    per_contact: dict[tuple[str, str], dict] = {}
+    unresolved: list[tuple[str, dict, list[str]]] = []
+    accounts = [("main", ghl)] + ([("sms", secondary)] if secondary else [])
+
+    for row in rows:
         email = (row.get("email") or "").strip().lower()
         if not email:
             continue
-
         roles = classify(row, stayed_minutes=stayed_minutes,
                          event_finished=event_finished)
-        wanted = [f"{prefix} {SUFFIXES[r]}" for r in roles
-                  if r in SUFFIXES and r != PROSPECT_ROLE]
-        prospect_tag = f"{prefix} {SUFFIXES[PROSPECT_ROLE]}"
+        found_anywhere = False
+        for label, client in accounts:
+            try:
+                hits = find_contacts(client, email, phone_of(row))
+            except GHLError as exc:
+                report.errors.append(f"[{label}] {email}: lookup failed - {exc}")
+                continue
+            for c in hits:
+                found_anywhere = True
+                entry = per_contact.setdefault((label, c["id"]), {
+                    "client": client, "label": label, "contact": c,
+                    "roles": set(), "emails": []})
+                entry["roles"].update(roles)
+                entry["emails"].append(email)
+        if not found_anywhere:
+            unresolved.append((email, row, roles))
+            report.unmatched.append(email)
+        else:
+            report.matched += 1
 
-        # Any state this run did not assert is contradicted by the current data
-        # and comes off. Only within this prefix, and only once the event has
-        # run -- before that classify() returns no state at all, so clearing on
-        # that basis would wipe a previous session's record for no reason.
+    merged = sum(1 for e in per_contact.values() if len(set(e["emails"])) > 1)
+    if merged:
+        report.merged_registrations = merged
+
+    prospect_tag = f"{prefix} {SUFFIXES[PROSPECT_ROLE]}"
+    for (label, cid), entry in per_contact.items():
+        roles = entry["roles"]
+        # A union can hold both attended and absent, one per registration. The
+        # person was there, so attendance wins and absence is dropped.
+        #
+        # Only attendance. "absent" means "did not attend live" and coexists
+        # with "replay" by design -- that pair is the no-show who later watched
+        # the recording, which is 21 of 9/24's registrants and 16 of 10/1's.
+        # Collapsing on replay as well stripped "absent" from all 77 of them.
+        if "attended" in roles:
+            roles.discard("absent")
+        wanted = [f"{prefix} {SUFFIXES[r]}" for r in sorted(roles)
+                  if r in SUFFIXES and r != PROSPECT_ROLE]
         stale = []
         if event_finished:
             stale = [f"{prefix} {SUFFIXES[r]}" for r in STATE_ROLES
                      if r not in roles]
+        _write_one(entry["client"], entry["contact"], wanted, apply, report,
+                   label, owner_tags, prospect_tag, stale)
 
-        common = dict(apply=apply, report=report, owner_tags=owner_tags,
-                      prospect_tag=prospect_tag, stale_tags=stale, row=row,
-                      prefix=prefix, create_missing=create_missing)
-        hit = _tag_in(ghl, email, wanted, label="main", **common)
-        if secondary is not None:
-            hit = _tag_in(secondary, email, wanted, label="sms", **common) or hit
-        if hit:
-            report.matched += 1
-        else:
-            report.unmatched.append(email)
+    if create_missing:
+        for email, row, roles in unresolved:
+            wanted = [f"{prefix} {SUFFIXES[r]}" for r in roles
+                      if r in SUFFIXES and r != PROSPECT_ROLE]
+            for label, client in accounts:
+                _create_one(client, email, row, wanted + [prospect_tag],
+                            prefix, apply, report, label)
 
     return report
 

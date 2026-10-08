@@ -393,9 +393,10 @@ def test_contradictory_state_tags_are_cleared():
     ghl = _FakeGHL({"m@x.com": ["everwebinar attended", "everwebinar replay",
                                 "everwebinar register", "10/1 attended"]})
     rep = sync.SyncReport()
-    sync._tag_in(ghl, "m@x.com", ["everwebinar register", "everwebinar absent"],
-                 True, rep, "main",
-                 stale_tags=["everwebinar attended", "everwebinar replay"])
+    sync._write_one(ghl, ghl.db["m@x.com"],
+                    ["everwebinar register", "everwebinar absent"], True, rep,
+                    "main", set(), None,
+                    ["everwebinar attended", "everwebinar replay"])
     removed = sorted(t for _, tags in ghl.removed for t in tags)
     check("the contradicted tags come off",
           removed == ["everwebinar attended", "everwebinar replay"], str(removed))
@@ -413,8 +414,8 @@ def test_owners_are_recorded_but_not_prospected():
     print("\nownership withholds the prospect tag, not the record")
     owner = _FakeGHL({"o@x.com": ["uoo member"]})
     rep = sync.SyncReport()
-    sync._tag_in(owner, "o@x.com", ["everwebinar attended"], True, rep, "main",
-                 owner_tags={"uoo member"}, prospect_tag="everwebinar prospect")
+    sync._write_one(owner, owner.db["o@x.com"], ["everwebinar attended"], True,
+                    rep, "main", {"uoo member"}, "everwebinar prospect", [])
     added = sorted(t for _, tags in owner.added for t in tags)
     check("an owner still gets the attendance tag",
           added == ["everwebinar attended"], str(added))
@@ -422,8 +423,8 @@ def test_owners_are_recorded_but_not_prospected():
 
     lead = _FakeGHL({"l@x.com": []})
     rep2 = sync.SyncReport()
-    sync._tag_in(lead, "l@x.com", ["everwebinar attended"], True, rep2, "main",
-                 owner_tags={"uoo member"}, prospect_tag="everwebinar prospect")
+    sync._write_one(lead, lead.db["l@x.com"], ["everwebinar attended"], True,
+                    rep2, "main", {"uoo member"}, "everwebinar prospect", [])
     added2 = sorted(t for _, tags in lead.added for t in tags)
     check("a non-owner gets both",
           added2 == ["everwebinar attended", "everwebinar prospect"], str(added2))
@@ -434,20 +435,13 @@ def test_missing_registrants_are_created_only_when_asked():
     print("\ncreating contacts for registrants GHL has never seen")
     row = {"first_name": "K", "last_name": "W", "phone_country_code": "+1",
            "phone_number": "7274123088"}
-    off = _FakeGHL({})
-    rep = sync.SyncReport()
-    hit = sync._tag_in(off, "new@x.com", ["everwebinar attended"], True, rep,
-                       "main", row=row, create_missing=False)
-    check("without the flag nothing is created and the miss is reported",
-          not hit and not off.created)
-
     on = _FakeGHL({})
     rep2 = sync.SyncReport()
-    hit2 = sync._tag_in(on, "new@x.com", ["everwebinar attended"], True, rep2,
-                        "main", prospect_tag="everwebinar prospect", row=row,
-                        prefix="everwebinar", create_missing=True)
-    check("with the flag the contact is created and counted",
-          hit2 and rep2.created == 1 and len(on.created) == 1)
+    sync._create_one(on, "new@x.com", row,
+                     ["everwebinar attended", "everwebinar prospect"],
+                     "everwebinar", True, rep2, "main")
+    check("the contact is created and counted",
+          rep2.created == 1 and len(on.created) == 1)
     made = on.created[0] if on.created else {}
     check("it carries the phone, normalised", made.get("phone") == "+17274123088",
           str(made.get("phone")))
@@ -456,11 +450,57 @@ def test_missing_registrants_are_created_only_when_asked():
           ["everwebinar attended", "everwebinar prospect"], str(made.get("tags")))
 
     junk = _FakeGHL({})
-    sync._tag_in(junk, "j@x.com", ["everwebinar absent"], True, sync.SyncReport(),
-                 "main", row={"phone_number": "Iwanttotradeoptions"},
-                 prefix="everwebinar", create_missing=True)
+    sync._create_one(junk, "j@x.com", {"phone_number": "Iwanttotradeoptions"},
+                     ["everwebinar absent"], "everwebinar", True,
+                     sync.SyncReport(), "main")
     check("a junk phone is omitted rather than written",
           "phone" not in (junk.created[0] if junk.created else {"phone": 1}))
+
+
+def test_two_registrations_on_one_record_merge_rather_than_fight():
+    """Attendance is a union: if any registration attended, the person did.
+
+    Ricky Puckett registered for 10/1 twice on one phone number --
+    cpdaltexuoo@gmail.com attended 50 minutes, cpdaltex@gmail.com did not show
+    -- and only the second address has a GHL record, so both rows resolve to it.
+    Written row by row, one set "10/1 attended" and the next removed it. The 50
+    minutes was the half that lost.
+    """
+    print("\ntwo registrations landing on one contact")
+    def collapse(*role_sets):
+        roles = set().union(*role_sets)
+        if "attended" in roles:          # mirrors sync()
+            roles.discard("absent")
+        return roles
+
+    check("the union keeps attendance and drops absence",
+          collapse({"register", "attended"}, {"register", "absent"})
+          == {"register", "attended"})
+    # "absent" means did not attend LIVE, so it coexists with "replay" -- that
+    # pair is the no-show who later watched the recording, 21 of 9/24's
+    # registrants and 16 of 10/1's. Collapsing on replay stripped all 77.
+    check("a no-show who watched the replay keeps BOTH absent and replay",
+          collapse({"register", "absent", "replay"})
+          == {"register", "absent", "replay"},
+          str(sorted(collapse({"register", "absent", "replay"}))))
+    check("attending live still beats a second absent registration",
+          collapse({"register", "attended", "replay"}, {"register", "absent"})
+          == {"register", "attended", "replay"})
+    roles = collapse({"register", "attended"}, {"register", "absent"})
+
+    ghl = _FakeGHL({"r@x.com": ["10/1 absent"]})
+    rep = sync.SyncReport()
+    sync._write_one(ghl, ghl.db["r@x.com"], ["10/1 register", "10/1 attended"],
+                    True, rep, "main", set(), None,
+                    [f"10/1 {sync.SUFFIXES[r]}" for r in sync.STATE_ROLES
+                     if r not in roles])
+    added = sorted(t for _, tags in ghl.added for t in tags)
+    removed = sorted(t for _, tags in ghl.removed for t in tags)
+    check("the record ends up attended", "10/1 attended" in added, str(added))
+    check("and the stale absence is cleared",
+          removed == ["10/1 absent"], str(removed))
+    check("replay is cleared too, since neither row watched one",
+          "10/1 replay" not in added)
 
 
 def main() -> int:
@@ -482,7 +522,8 @@ def main() -> int:
                test_phone_normalisation_rejects_junk_and_fixes_double_country_code,
                test_contradictory_state_tags_are_cleared,
                test_owners_are_recorded_but_not_prospected,
-               test_missing_registrants_are_created_only_when_asked]:
+               test_missing_registrants_are_created_only_when_asked,
+               test_two_registrations_on_one_record_merge_rather_than_fight]:
         fn()
     print()
     if FAILURES:
