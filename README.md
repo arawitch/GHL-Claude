@@ -17,12 +17,48 @@ excludes credentials and exported CSVs (which contain personal data).
 
 ```bash
 python3 cli.py info
+python3 tests.py    # offline, no network, no pytest
 ```
+
+### ⚠️ The configured location is not the one this work documents
+
+`GHL_LOCATION_ID` is currently **`U23Jnu7rscfzAOUmSevW`**. Every prior session,
+the handoff sheet and the figures below were produced against **University Of
+Options — `IyorbIIbJLsMLaqy8j1P`**. These are different GoHighLevel
+sub-accounts, and the current token cannot reach the second one at all:
+
+```
+POST /contacts/search  locationId=IyorbIIbJLsMLaqy8j1P
+  -> 403 {"message":"The token does not have access to this location"}
+```
+
+They are easy to mistake for one another — both hold roughly 48,978 contacts and
+share tag names like `never send`, `do not email` and `spamtrap` — but none of
+the tags this project created exist in the configured one. `current email list`,
+`email batch 1`–`5` and `verified bad` are all absent, so the ZeroBounce
+verification and the volume-ramp tagging are not present there.
+
+**Any figure measured in this environment describes `U23Jnu7rscfzAOUmSevW`, not
+the account the send plan is for.** Fix the credentials before acting on a count.
+
+### Token scopes
+
+A private integration token is issued with a chosen set of scopes, and the
+contact scopes are separable from the rest. The token currently in this
+environment can read contacts and tags but not locations, workflows or emails,
+so those endpoints answer `401 The token is not authorized for this scope`.
+
+Everything that builds a list keeps working, because all of it runs on
+`POST /contacts/search`. `info` prints `unavailable (token lacks this scope)`
+for the parts it cannot reach rather than failing whole; `workflows` and
+`schedules` fail with an error naming the fix. To restore them, add the
+`locations.readonly`, `workflows.readonly` and `emails.readonly` scopes in
+**Settings > Private Integrations** and re-issue the token.
 
 ## Commands
 
-All commands here are **read-only**. Nothing sends an email, edits a contact,
-or enrols anyone in a workflow.
+Commands that edit contacts say so and default to a dry run; everything else is
+read-only. Nothing sends an email.
 
 ```bash
 python3 cli.py info                       # account summary
@@ -32,6 +68,10 @@ python3 cli.py schedules                  # existing email campaign schedules
 python3 cli.py count  --tag "weekly newsletter subscriber" --mailable
 python3 cli.py export --tag "weekly newsletter subscriber" --mailable \
                       --out lists/newsletter.csv
+
+python3 cli.py sync-webinar --product everwebinar --list        # webinar ids
+python3 cli.py sync-webinar --product everwebinar --webinar-id 7
+python3 cli.py sync-webinar --product everwebinar --webinar-id 7 --apply
 ```
 
 `--tag` repeats to mean OR. `--mailable` drops contacts with no email address
@@ -41,34 +81,64 @@ on its own for a send list.
 ### Building a send list
 
 ```bash
-python3 cli.py audit                      # funnel from 48,978 down to a safe list
+python3 cli.py audit                      # funnel from all contacts to a safe list
 python3 cli.py sendlist --tier engaged    # count only
 python3 cli.py sendlist --tier engaged --out lists/send.csv
 python3 cli.py sendlist --tier safe --tag "weekly newsletter subscriber" --out lists/nl.csv
 ```
 
-Three tiers, progressively more conservative:
+Three tiers. `safe` and `engaged` are both narrowings of the mailable pool, and
+`engaged` is the default:
 
-| Tier | Meaning | Size |
-| --- | --- | --- |
-| `safe` | mailable, minus every suppression tag | 28,856 |
-| `engaged` | `safe` + carries at least one engagement tag (default) | 10,752 |
-| `validated` | `safe` + address confirmed deliverable by a prior send | 23 |
+| Tier | Meaning | UOO | configured acct |
+| --- | --- | ---: | ---: |
+| `safe` | mailable, minus every suppression tag | 28,856 | 34,621 |
+| `engaged` | `safe` + carries at least one engagement tag (default) | 10,752 | 10,505 |
+| `validated` | `safe` + address confirmed deliverable by a prior send | 23 | 0 |
 
-`validated` is degenerate here and should not be used: 99% of contacts with
-`validEmail == true` also carry the `never send` tag, so intersecting the two
-leaves almost nothing. See the note at the end of this file.
+`validated` is not usable in either account, for different reasons. In UOO it is
+degenerate — 99% of contacts with `validEmail == true` also carry `never send`,
+so intersecting them leaves 23. In the configured account **no contact has
+`validEmail == true` at all**, so it matches nothing while looking like a
+successful, unusually cautious result.
 
-## ⚠️ Two suppression traps
+`sendlist --tier validated` therefore checks first and refuses when the field is
+unpopulated, exiting non-zero rather than writing a header-only CSV. That guard
+is about the field being absent, not about which account is configured.
+
+Note that `engaged` and `validated` are alternative narrowings of `safe`, not
+successive ones. `audit` used to print all five figures in a single column,
+which read as one funnel and made the safe list look an order of magnitude
+smaller than it is.
+
+## ⚠️ Three suppression traps
 
 **1. The global DND flag misses per-channel email DND.** GoHighLevel tracks DND
-per channel in `dndSettings`, where `status == "active"` means DND is ON for
-that channel. **3,700 contacts have `dndSettings.Email.status == "active"` while
-`dnd` is false** — email-suppressed without the global flag. `MAILABLE` now
-checks both; a filter on `dnd` alone would mail every one of them.
+per channel in `dndSettings`, separately from the global `dnd` boolean. A
+contact can be email-suppressed there while `dnd` is false, and a filter on
+`dnd` alone would mail every one of them. `MAILABLE` checks both.
 
-**2. Suppression also lives in tags.** 11,127 contacts carry a suppression
-*tag* that no DND field reflects:
+**2. Per-channel DND is not a boolean, and `"active"` is not the only "on".**
+Statuses observed are `inactive` (off), `active` (on) and `permanent` (on, set
+by a hard opt-out such as an SMS STOP keyword). Email was seen using only
+`active`/`inactive`, but SMS and RCS both carry `permanent`, so Email can
+acquire it. `MAILABLE` excludes both on-statuses. This is defensive rather than
+load-bearing today — it costs nothing and closes the gap wherever it appears.
+
+Exclusion is written as `not_eq`, never as `eq "inactive"`, and that detail *is*
+load-bearing. **Verified live: `eq` on a status value the location does not
+currently use matches every contact rather than none** — `Email.status ==
+"inactive"` returned the entire contact list, as did `"temporary"` and
+`"pending"`. A guard phrased as a positive assertion would stop filtering
+silently. `not_eq` is exact: `eq("active")` and `not_eq("active")` sum to the
+full contact count.
+
+(Both observations come from `U23Jnu7rscfzAOUmSevW`. They are statements about
+how the GHL API treats these operators, which is not location-specific, but the
+per-channel status *values* in UOO have not been re-checked.)
+
+**3. Suppression also lives in tags.** In UOO, 11,127 contacts carry a
+suppression *tag* that no DND field reflects:
 
 | Count | Tag |
 | ---: | --- |
@@ -80,8 +150,9 @@ checks both; a filter on `dnd` alone would mail every one of them.
 | 268 | `spamtrap` |
 
 (Counts overlap; 11,127 is the de-duplicated total.) `spamtrap` and `complainer`
-are the dangerous ones — mailing those is the fastest route to a blocklisting.
-Use `sendlist`, not `export --mailable`, for anything that will actually be sent.
+are the dangerous ones — mailing
+those is the fastest route to a blocklisting. Use `sendlist`, not
+`export --mailable`, for anything that will actually be sent.
 
 The tag list is hand-curated in `ghl/sending.py` and does not update itself. A
 new suppression tag added in the GHL UI will not be honoured until it is added
@@ -417,6 +488,11 @@ landing in spam -- with both live, registrants receive two sets.
 Track B wants persuasion rather than logistics and must have registrants removed
 from every send, so it never collides with what WebinarJam is sending.
 
+A slot whose tag does not exist counts 0; a slot whose count *fails* is reported
+as `FAILED` with the reason, and `weekly` exits non-zero. Those two used to be
+merged into one "tag missing" label, which meant an API failure could quietly
+remove a send from the week's plan.
+
 Slots that share an audience are exported once rather than as byte-identical
 files. **Re-export Track B close to send time**: the export is a snapshot, and
 anyone who registers mid-week must drop out of the unregistered list.
@@ -438,6 +514,13 @@ So the recovered pool is added in steps of +25%. Each step holds the proven core
 constant and adds a bounded slice, newest first: the more recently someone opted
 in, the more likely they are to recognise the sender.
 
+The pools have not been measured in UOO since the ramp was written. In the
+configured account they are 10,505 core plus 24,116 recovered, but that is a
+different sub-account and should not be used to size a UOO send.
+
+A larger recovered pool means more steps, not bigger ones, so the ramp stays
+safe either way as long as `--start` reflects real proven send volume.
+
 Pass the verifier's bad verdicts via `--exclude-file` until they are tagged in
 GHL. No filter can see them before then.
 
@@ -450,11 +533,15 @@ python3 cli.py reactivation --out-dir lists/     # write both CSVs
 
 Produces two files:
 
-- **`verify-candidates.csv`** (3,036 addresses) — suppressed by a *delivery
-  failure* with no opt-out of any kind on record. These are the only contacts it
-  is appropriate to send to a verification service.
-- **`NEVER-UPLOAD.csv`** (14,982 addresses) — consent withdrawn: global DND,
-  email-channel DND, or a `do not email` / `complainer` / `spamtrap` tag.
+- **`verify-candidates.csv`** (3,036 addresses in UOO) — suppressed by a
+  *delivery failure* with no opt-out of any kind on record. These are the only
+  contacts it is appropriate to send to a verification service.
+- **`NEVER-UPLOAD.csv`** (14,982 addresses in UOO) — consent withdrawn: global
+  DND, email-channel DND at any on-status, or a `do not email` / `complainer` /
+  `spamtrap` tag.
+
+Run against the configured account these come out at 3,179 and 8,981, which is
+a different sub-account rather than a change in UOO.
 
 The split matters because a hard bounce is a fact about the recipient's mailbox
 and survives a change of sending domain, whereas a reputation block is a fact
@@ -476,34 +563,164 @@ its own merits. Consent attaches to the address, not the record, so the export
 filters `verify-candidates.csv` against every suppressed address before writing.
 The two files are verified to share zero addresses.
 
-## Open question: `never send` vs `validEmail`
+## Still open: `never send` vs `validEmail`
 
-Of the 3,570 contacts GHL has confirmed deliverable and that pass `MAILABLE`,
+Of the 3,570 UOO contacts GHL had confirmed deliverable and that pass `MAILABLE`,
 **3,538 (99%) are tagged `never send`** and 2,558 (72%) are tagged
 `do not email`. Either the tag was applied more broadly than intended, or the
 validated pool is genuinely a historical list that was later suppressed
 wholesale. Worth confirming before treating `never send` as a permanent
 exclusion, since it is the single largest suppression set.
 
+**This has not been resolved.** An attempt to settle it on 2026-07-26 measured
+the wrong sub-account — `U23Jnu7rscfzAOUmSevW`, where `validEmail` is empty and
+the tag overlap is different — so those findings say nothing about UOO and have
+been removed. Re-running it needs a token with access to `IyorbIIbJLsMLaqy8j1P`.
+
+The question to answer there is not really about `validEmail`, which only records
+whether GHL has delivered to an address before. It is how much of `never send`
+is *not* already covered by `do not email`: the contacts carrying `never send`
+alone, otherwise sendable, and especially any among them with engagement tags.
+A suppression tag sitting on people who were demonstrably opening and clicking
+is the case that most needs a human to confirm what the tag meant.
+
+Until then `never send` stays in `SUPPRESSION_TAGS`. That is the conservative
+default: the cost of keeping it wrongly is unmailed contacts, and the cost of
+dropping it wrongly is mailing people who asked not to be mailed.
+
 ## Account snapshot
 
-Verified live against the API on 2026-07-25:
+Two different sub-accounts, kept side by side because it is otherwise very easy
+to read a number from the wrong one. The left column is the account this project
+is for; the right is the one the current credentials actually reach.
 
-| | |
+| | UOO `IyorbIIbJLsMLaqy8j1P` (2026-07-25) | configured `U23Jnu…` (2026-07-26) |
+| --- | ---: | ---: |
+| Contacts | 48,978 | 48,980 |
+| Has an email address | — | 47,494 |
+| Mailable (email present, both DND flags off) | 39,983 | 47,262 |
+| Sendable (mailable, minus suppression tags) | 28,856 | 34,621 |
+| Engaged (sendable, with an open or click) | 10,752 | 10,505 |
+| Recovered (sendable, no engagement tag) | — | 24,116 |
+| Global `dnd == true` | — | 148 |
+| Email-channel DND on | 3,700 | 227 (84 with `dnd` false) |
+| `validEmail == true` | 3,570 | 0 |
+| Tags | 544 | 561 |
+| Custom fields | 278 | 226 |
+| Workflows | 366 (342 draft, 24 published) | token lacks the scope |
+
+**The two columns are not a before and after.** They are separate
+sub-accounts measured a day apart, and nothing in the right-hand column says
+anything about the left. The UOO figures have not been re-verified since
+2026-07-25, because the current token cannot reach that location.
+
+Across 16 past events the live show rate was 27.5% on 4,171 registrations, and
+3,269 no-shows were recovered at 22.2% by replay. **Every one of the 75
+webinar-related workflows is in `draft`** — no reminder, no-show follow-up or
+replay automation is running.
+
+### Note on a retracted warning
+
+An earlier revision of this file read the two columns as one account changing
+overnight and flagged it as lost consent — roughly 3,500 unsubscribes apparently
+re-entering the mailable pool. **That was wrong**, and the tell was available at
+the time: the contact counts match to within two, which is a coincidence no bulk
+edit produces. The two locations are near-copies of each other, so a same-day
+comparison looked like drift.
+
+Worth keeping in mind whenever a figure here moves unexpectedly: check which
+`GHL_LOCATION_ID` produced it before concluding the account changed.
+
+### Two products, two APIs, one key
+
+`cli.py sync-webinar --product` picks between them:
+
+| | `webinarjam` | `everwebinar` |
+| --- | --- | --- |
+| What | one-off live events | evergreen and just-in-time rooms |
+| This account | id **2**, "Bot Webinar" | id **7**, "Bot Webinar" |
+| Schedules | dated sessions with global ids | the literal string `Just in time` |
+| Timezone set on it | `America/Los_Angeles` | **`America/New_York`** |
+
+A `webinar_id` only means something inside its own product, so id 2 and id 7 are
+unrelated despite sharing a name. A live id spans **every session ever scheduled
+under it** — id 2 holds both the 9/24 and 10/1 events in one list of 198 — so
+`--schedule-id` is needed to tag one event rather than both. `--list` prints the
+ids, and omitting `--schedule-id` prints the schedules.
+
+An evergreen room has no dated session, so the `has_run` / `--settle-minutes`
+machinery is skipped for it: a just-in-time session is already over for whoever
+registered. It gets one stable `everwebinar …` tag namespace rather than a
+per-date prefix, which would mint new tags daily.
+
+### There is no webhook
+
+Several third-party guides describe a `POST /webhooks` endpoint taking a bearer
+token. It does not exist. Probing with a deliberately wrong path settles it in
+both directions — a fake route returns a 404 HTML page, while every real route
+returns `{"errors":{"api_key":[...]}}`:
+
+| Route | Exists |
 | --- | --- |
-| Contacts | 48,978 |
-| Mailable (email present, both DND flags off) | 39,983 |
-| Sendable (mailable, minus suppression tags) | 28,856 |
-| Engaged (sendable, with an open or click) | 10,752 |
-| Tags | 544 |
-| Custom fields | 278 |
-| Custom values | 36 |
-| Workflows | 366 (342 draft, 24 published) |
+| `POST /{product}/webinars`, `/webinar`, `/register` | yes |
+| `POST /{product}/registrants` — **registrants *and* attendance** | yes |
+| `POST /{product}/attendees` | no (404) |
+| `POST /{product}/webhooks` | no (404) |
+| `POST /{product}/zzznotreal` — control | no (404) |
 
-**Every one of the 75 webinar-related workflows is in `draft`.** No reminder,
-no-show follow-up, or replay automation is running. Measured across 16 past
-events, the live show rate is 27.5% on 4,171 registrations, and 3,269 no-shows
-were recovered at 22.2% by replay.
+So attendance is **polled, not pushed**, which is why this is a cron job rather
+than a trigger. `/registrants` carries the same fields as the dashboard CSV:
+`attended_live`, `time_live`, `attended_replay`, `time_replay`,
+`purchased_live`, `revenue_live`.
+
+### A regenerated key fails in a way that does not look like a key problem
+
+An old key answers `401 {"api_key":"API access is not allowed!"}` — which reads
+like a plan or permissions issue, not a stale credential. Regenerating the key
+in WebinarJam invalidates every copy of it immediately. The environment's
+`WEBINARJAM_API_KEY` was found revoked this way on 2026-10-08, meaning the sync
+had been failing silently; `_post` now names the likely cause in the error.
+
+`WJ_API_KEY` is accepted as an alias for the same variable.
+
+### Running it on a schedule
+
+`.github/workflows/webinar-sync.yml` runs hourly at :17. Secrets:
+
+| Secret | What |
+| --- | --- |
+| `WEBINARJAM_API_KEY` (or `WJ_API_KEY`) | WebinarJam → My Webinars → Advanced Settings → API custom integration |
+| `GHL_API_KEY` / `GHL_LOCATION_ID` | email sub-account; needs `contacts.write` |
+| `GHL_SMS_API_KEY` / `GHL_SMS_LOCATION_ID` | SMS sub-account; omit to sync one side only |
+
+Scheduled runs target the evergreen room and write. `workflow_dispatch` defaults
+to a dry run and can target a live event by schedule id.
+
+**A scheduled workflow only fires from the repository's default branch.** On a
+non-default branch the cron never runs and `workflow_dispatch` shows no button,
+which is indistinguishable from a workflow that runs and finds nothing.
+
+### What the attendance tags do and do not mean
+
+- **A zero-second view is not a view.** 4 of the 10 10/1 replay viewers logged
+  `00:00:00` — they opened the room and left. Under `MIN_VIEW_SECONDS` (120) the
+  role is not granted, because replay watchers convert at 6.5% against 1.4% for
+  registrants who watched nothing, so a zero-second open in the replay cohort
+  hands a no-show the warmest follow-up in the sequence.
+- **Attendance is not written before the event.** Covered under the send plan:
+  `attended_live` is `No` for everyone until the session runs.
+- **Customers are skipped, which makes the tags an incomplete attendance
+  record.** `skip_tags` defaults to `smstarget.OWNS_PITCHED_PRODUCT`, so anyone
+  who already owns what the webinar sells is left untagged entirely. On the 10/1
+  event that is the difference between 48 real attendees and 16 tagged ones.
+  That is deliberate — it keeps owners out of sequences keyed on the tag — but
+  it means `10/1 attended` answers "who attended and is still a prospect", not
+  "who attended". `--include-customers` turns it off.
+
+Verified against a month of hand-tagging: on the 10/1 live event the sync
+independently reproduced the attendance split and flagged the one registrant
+with no GHL contact record — a $3,800 bot customer carrying no ownership tag
+anywhere, found by hand only via the order table.
 
 ## What the API can and cannot do
 
@@ -523,9 +740,18 @@ everything around them — deciding who belongs in one and enrolling them in bul
 
 - **Rate limits:** 100 requests per 10s burst, 200,000/day. `GHLClient`
   self-throttles below the burst ceiling and retries on 429/5xx with backoff.
-- **Slow queries return `401 {"message":"Command timed out"}`** rather than a
-  timeout status. This is transient and misleading — it is not an auth failure.
-  The client retries it.
+- **A 401 means two unrelated things, and only one of them is permanent.**
+  Slow queries return `401 {"message":"Command timed out"}` rather than a
+  timeout status, and succeed on a retry. A token that is expired or missing a
+  scope returns `401 {"message":"The token is not authorized for this scope."}`,
+  which no amount of retrying fixes. The status code cannot tell them apart, so
+  the client classifies on the body: it retries the timeout with backoff, and
+  raises `GHLScopeError` — carrying the fix — for the scope failure.
+
+  This was previously documented as working but was not implemented: `request()`
+  retried only 429 and 5xx, so a timed-out 401 aborted the run. That mattered
+  most on exactly the calls it hits — long `search_contacts` pagination, where
+  it killed an export part-written.
 - **Pagination uses the `searchAfter` cursor**, not offsets; offset paging is
   capped server-side and silently truncates results.
 - **Date filters run in the location's timezone, but `dateAdded` is returned in
@@ -536,10 +762,20 @@ everything around them — deciding who belongs in one and enrolling them in bul
 ## Layout
 
 ```
-ghl/client.py     authenticated client: throttling, retries, pagination
-ghl/segments.py   filter helpers, mailability guard, CSV export
-cli.py            read-only command line interface
+ghl/client.py        authenticated client: throttling, retries, 401 classification
+ghl/segments.py      filter helpers, mailability guard, CSV export
+ghl/sending.py       suppression tags, send tiers, funnel audit
+ghl/reactivation.py  verify-vs-never-upload split, address-level consent dedup
+ghl/weekly.py        per-webinar two-track send plan
+ghl/rollout.py       staged volume ramp
+cli.py               read-only command line interface
+tests.py             offline tests: no network, no pytest
 ```
+
+`tests.py` covers the failures that return a plausible answer rather than an
+error — a suppression guard that stops matching, a send list emptied by an
+unpopulated input field, a slot silently dropped from a send plan. Those are the
+ones a live spot-check does not catch.
 
 ## Writes
 

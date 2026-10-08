@@ -268,7 +268,27 @@ def _relevant_schedules(wj, webinar_id, window_days):
 
 
 def cmd_sync_webinar(client: GHLClient, args) -> None:
-    wj = WebinarJamClient()
+    wj = WebinarJamClient(product=args.product)
+
+    if not args.list and args.webinar_id is None:
+        print("--webinar-id is required (or pass --list to see them)", file=sys.stderr)
+        return
+
+    if args.list:
+        print(f"{args.product} webinars:")
+        for w in wj.webinars():
+            print(f"  id={w['webinar_id']:<4} hash={w.get('webinar_hash','?'):<10} "
+                  f"{w.get('name','?')}  schedules={w.get('schedules')}")
+        return
+
+    # An evergreen room has no scheduled sessions: its schedule is the literal
+    # string "Just in time" with no date and no id, so there is nothing to look
+    # up, nothing to wait for, and attendance is knowable as soon as someone has
+    # been through. The whole has_run / settle-minutes path below is therefore
+    # skipped for it rather than given a fake schedule id.
+    if wj.evergreen:
+        _sync_one(client, wj, args, evergreen=True)
+        return
 
     if args.auto:
         found = _relevant_schedules(wj, args.webinar_id, args.window_days)
@@ -293,7 +313,7 @@ def cmd_sync_webinar(client: GHLClient, args) -> None:
     _sync_one(client, wj, args)
 
 
-def _sync_one(client: GHLClient, wj, args) -> None:
+def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> None:
 
     # Attendance roles are meaningless until the session has run: WebinarJam
     # reports attended_live as "No" for everyone beforehand. has_run() compares
@@ -302,26 +322,39 @@ def _sync_one(client: GHLClient, wj, args) -> None:
     # finished from 7 AM Pacific, tagging every registrant absent seven hours
     # early. An unreadable date returns None, and None must not be treated as
     # finished: writing attendance off a guess is the failure being prevented.
+    #
+    # None of that applies to an evergreen room. It has no start time to compare
+    # against, and a just-in-time session is already over for anyone who
+    # registered, so attendance is trustworthy on arrival.
     sched_date = None
-    for s in wj.schedules(args.webinar_id):
-        if str(s.get("schedule")) == str(args.schedule_id):
-            sched_date = str(s.get("date", ""))
-    ran = wj.has_run(args.webinar_id, args.schedule_id, args.settle_minutes)
-    event_finished = ran is True
+    if evergreen:
+        event_finished, ran = True, True
+    else:
+        for s in wj.schedules(args.webinar_id):
+            if str(s.get("schedule")) == str(args.schedule_id):
+                sched_date = str(s.get("date", ""))
+        ran = wj.has_run(args.webinar_id, args.schedule_id, args.settle_minutes)
+        event_finished = ran is True
 
     prefix = args.prefix
-    if not prefix:
+    if not prefix and not evergreen:
         for s in wj.schedules(args.webinar_id):
             if str(s.get("schedule")) == str(args.schedule_id):
                 d = str(s.get("date", ""))[:10].split("-")
                 if len(d) == 3:
                     prefix = f"{int(d[1])}/{int(d[2])}"
+    if not prefix:
+        # An evergreen room runs continuously, so a per-date prefix would mint a
+        # new tag every day. One stable namespace keeps the cohort queryable,
+        # and it reuses the tags this location already has history on.
+        prefix = "everwebinar" if evergreen else None
         if not prefix:
             print("could not derive a tag prefix; pass --prefix", file=sys.stderr)
             return
 
     mode = "APPLYING" if args.apply else "DRY RUN - nothing will be written"
-    print(f"webinar {args.webinar_id} schedule {args.schedule_id} -> tag prefix {prefix!r}")
+    where = "just in time" if evergreen else f"schedule {args.schedule_id}"
+    print(f"{wj.product} webinar {args.webinar_id} {where} -> tag prefix {prefix!r}")
     print(f"{mode}\n")
 
     if not event_finished:
@@ -341,10 +374,13 @@ def _sync_one(client: GHLClient, wj, args) -> None:
                               location_id=os.environ["GHL_SMS_LOCATION_ID"])
         print(f"  also tagging in SMS location {secondary.location_id}\n")
 
-    rep = syncmod.sync(wj, client, args.webinar_id, args.schedule_id, prefix,
+    rep = syncmod.sync(wj, client, args.webinar_id,
+                       None if evergreen else args.schedule_id, prefix,
                        stayed_minutes=args.stayed_minutes, apply=args.apply,
                        event_finished=event_finished, secondary=secondary,
-                       skip_tags=smstarget.OWNS_PITCHED_PRODUCT)
+                       schedule_contains=args.schedule_text,
+                       skip_tags=(smstarget.OWNS_PITCHED_PRODUCT
+                                  if not args.include_customers else None))
 
     print(f"  registrants in WebinarJam   {rep.registrants:>7,}")
     print(f"  matched to a GHL contact    {rep.matched:>7,}")
@@ -719,7 +755,14 @@ def main() -> int:
     p.set_defaults(func=cmd_rollout)
 
     p = sub.add_parser("sync-webinar")
-    p.add_argument("--webinar-id", type=int, required=True)
+    p.add_argument("--product", default="webinarjam",
+                   choices=["webinarjam", "everwebinar"],
+                   help="webinarjam for live events, everwebinar for the "
+                        "evergreen / just-in-time room (separate APIs, one key)")
+    p.add_argument("--list", action="store_true",
+                   help="list this product's webinars and ids, then exit")
+    p.add_argument("--webinar-id", type=int,
+                   help="required unless --list")
     p.add_argument("--schedule-id", type=int, help="omit to list available schedules")
     p.add_argument("--auto", action="store_true",
                    help="sync every session within --window-days of now; no weekly edits needed")
@@ -731,6 +774,12 @@ def main() -> int:
                         "session length or late joiners get tagged absent")
     p.add_argument("--stayed-minutes", type=int, default=0,
                    help="also tag '<prefix> stayed' for anyone whose live watch time reached this")
+    p.add_argument("--schedule-text",
+                   help="filter registrants whose schedule contains this text, "
+                        "e.g. '1 Oct 2026' -- a live webinar id spans every "
+                        "session ever run under it")
+    p.add_argument("--include-customers", action="store_true",
+                   help="also tag people who already own what the webinar sells")
     p.add_argument("--apply", action="store_true", help="write tags (default is a dry run)")
     p.set_defaults(func=cmd_sync_webinar)
 
@@ -806,6 +855,9 @@ def main() -> int:
     try:
         args.func(GHLClient(), args)
     except GHLError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except WebinarJamError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

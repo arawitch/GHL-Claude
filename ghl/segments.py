@@ -17,14 +17,28 @@ from .client import GHLClient
 # Every email-bound segment should be intersected with this.
 #
 # The global `dnd` flag is not enough. GoHighLevel also tracks DND per channel
-# in dndSettings, where a status of "active" means DND is ON for that channel.
-# 3,700 contacts in this location have dndSettings.Email.status == "active"
-# while dnd is false -- email-suppressed without the global flag set. Checking
-# `dnd` alone would mail every one of them.
+# in dndSettings, and a contact can be email-suppressed there while `dnd` is
+# false -- checking `dnd` alone would mail every one of them.
+#
+# Per-channel DND is not a boolean. Observed statuses are "inactive" (DND off),
+# "active" (DND on) and "permanent" (DND on, set by a hard opt-out such as an
+# SMS STOP keyword). Only "inactive" is safe. Email was seen using just
+# active/inactive, but SMS and RCS both carry "permanent", so an Email entry
+# could acquire it -- and a guard that only excluded "active" would pass those
+# straight into a send. Excluding both costs nothing.
+#
+# Excluding is done with not_eq rather than by requiring status == "inactive".
+# Verified against the live API: eq on any value the location does not use
+# matches every contact rather than none, so a positive assertion silently
+# stops filtering. not_eq is exact -- eq("active") + not_eq("active") sums to
+# the full contact count. That is API behaviour, not a fact about one location.
+EMAIL_DND_ON_STATUSES = ["active", "permanent"]
+
 MAILABLE = [
     {"field": "email", "operator": "exists"},
     {"field": "dnd", "operator": "eq", "value": False},
-    {"field": "dndSettings.Email.status", "operator": "not_eq", "value": "active"},
+    *[{"field": "dndSettings.Email.status", "operator": "not_eq", "value": s}
+      for s in EMAIL_DND_ON_STATUSES],
 ]
 
 # The tag column is named so GoHighLevel's importer will not auto-map it onto

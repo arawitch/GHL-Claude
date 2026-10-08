@@ -144,9 +144,11 @@ def mirror_tag(source: GHLClient, target: GHLClient, tag: str, apply: bool,
     return counts
 
 
-def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int,
+def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int,
+         schedule_id: int | None,
          prefix: str, stayed_minutes: int = 0, apply: bool = False,
          event_finished: bool = True, secondary: GHLClient | None = None,
+         schedule_contains: str | None = None,
          skip_tags: list[str] | None = None) -> SyncReport:
     """Pull one session's registrants and mirror them into GHL tags.
 
@@ -161,7 +163,8 @@ def sync(wj: WebinarJamClient, ghl: GHLClient, webinar_id: int, schedule_id: int
     """
     report = SyncReport()
 
-    for row in wj.registrants(webinar_id, schedule_id):
+    for row in wj.registrants(webinar_id, schedule_id,
+                              schedule_contains=schedule_contains):
         report.registrants += 1
         email = (row.get("email") or "").strip().lower()
         if not email:

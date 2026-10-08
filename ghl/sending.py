@@ -14,13 +14,26 @@ from .client import GHLClient
 from .segments import MAILABLE, all_of, has_tag
 
 # Tags that must never receive marketing email, discovered by auditing the
-# location's 544 tags. Ordered roughly by how much damage a send would do.
+# location's tags. Ordered roughly by how much damage a send would do.
+#
+# This list does not update itself, and the gap is not theoretical: an audit on
+# 2026-09-28 found 321 contacts inside the "engaged" segment carrying
+# hardbounced, verified bad, bad data or email unsub -- none of which were
+# listed here, so every send was reaching them. "verified bad" is the ZeroBounce
+# verdict, so those were addresses already paid to have identified as dead.
+#
+# Deliberately NOT suppressed: "bad timing" is a sales-stage tag meaning "not
+# ready to buy", not "do not contact".
 SUPPRESSION_TAGS = [
     "verified bad",    # invalid/abuse/spamtrap verdict from email verification
     "spamtrap",        # sending here is the fastest route to a blocklist
     "complainer",      # previously hit "report spam"
-    "never send",      # largest single suppression set in this location
+    "never send",      # largest single suppression set in UOO
     "do not email",    # explicit opt-out, not reflected in the DND flag
+    "email unsub",     # unsubscribed; separate tag from "do not email"
+    "hardbounced",     # mailbox does not exist -- survives a domain change
+    "verified bad",    # ZeroBounce verdict: invalid / abuse / spamtrap
+    "bad data",        # unusable address recorded by staff
     "soft bounce",
     "remove tag",
     "remove from bootcamp",
@@ -68,8 +81,30 @@ def validated(*extra: dict) -> list[dict]:
 
     validEmail is only populated once GHL has actually sent to an address, so
     this doubles as a "has send history" filter.
+
+    Check validation_data_available() before using this: where GHL has not
+    populated validEmail, this returns an empty list rather than a conservative
+    one, which does not look like a failure.
     """
     return safe_send({"field": "validEmail", "operator": "eq", "value": True}, *extra)
+
+
+def validation_data_available(client: GHLClient) -> bool:
+    """Whether GHL has populated validEmail for this location at all.
+
+    Two things filter on validEmail -- the `validated` send tier and
+    reactivation's confirmed_bad cohort -- and both fail quietly when the field
+    is empty. `validated` returns no contacts and confirmed_bad excludes no
+    contacts, neither of which looks like an error: one reads as "no one
+    qualified", the other as "nothing to exclude".
+
+    Not hypothetical -- sub-account U23Jnu7rscfzAOUmSevW has no contact with
+    validEmail == true at all, so both readings are wrong there. Checked at
+    runtime rather than hardcoded, since whether GHL has populated the field is
+    a property of the location the token happens to point at.
+    """
+    return client.count_contacts(
+        all_of({"field": "validEmail", "operator": "eq", "value": True})) > 0
 
 
 def audit(client: GHLClient) -> dict[str, int]:

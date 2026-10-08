@@ -88,11 +88,29 @@ BUYER_TAGS = [
 # So only the first group is stripped from the attendance tags. The split was
 # set by Audry on 2026-07-30: the bot presale counts as owning the product,
 # while prop bootcamp is a separate offer and stays a live upsell target.
+#
+# The Options Bot entries were checked against paid order records on 2026-10-07
+# rather than taken at face value, because the tag names here mislead. Of the
+# six that genuinely mark bot ownership, three were missing from this list and
+# are added below -- "options auto trader" (6 contacts, all 6 with a paid bot
+# order), "option and bot combo" (11, 8 with one) and "option bot combo".
+#
+# Three more that look like ownership are deliberately NOT here:
+#
+#   new bot user        163 contacts, ZERO Options Bot orders, 121 of them also
+#                       fx customer -- it marks the retired FX bot
+#   bot installed       no members at all
+#   bot web invite      2,018 contacts; an invitation, not a purchase
+#
+# Treating "new bot user" as ownership held 23 people out of a campaign who had
+# never bought a bot. "new combo purchase" sits in FRONT_END_BUYER below for the
+# same reason: only 15 of its 25 members have a bot order.
 OWNS_PITCHED_PRODUCT = [
     "uoo member", "options member", "customer", "fx customer",
     "flight path member", "grandfathered - active subscription",
     "current masters member", "gold member", "fs member",
     "options bot presale", "options bot sale",
+    "options auto trader", "option and bot combo", "option bot combo",
     "options nav new purchase", "options nav 4k new purchase",
     "options navigator purchased",
 ]

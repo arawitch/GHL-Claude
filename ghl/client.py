@@ -25,9 +25,31 @@ BURST_WINDOW_SECONDS = 10.0
 class GHLError(RuntimeError):
     """An API call failed in a way retrying will not fix."""
 
-    def __init__(self, status: int, method: str, path: str, body: str):
+    def __init__(self, status: int, method: str, path: str, body: str, hint: str = ""):
         self.status = status
-        super().__init__(f"{method} {path} -> HTTP {status}: {body[:500]}")
+        message = f"{method} {path} -> HTTP {status}: {body[:500]}"
+        if hint:
+            message += f"\n  {hint}"
+        super().__init__(message)
+
+
+class GHLScopeError(GHLError):
+    """The token is valid but was not issued with the scope this endpoint needs."""
+
+    def __init__(self, status: int, method: str, path: str, body: str):
+        super().__init__(status, method, path, body,
+                         hint="The token authenticated but lacks this endpoint's scope. "
+                              "Add it in GHL under Settings > Private Integrations and "
+                              "re-issue the token. Contact endpoints are unaffected.")
+
+
+# GoHighLevel answers 401 for three unrelated conditions and only one is
+# permanent, so the body decides how a 401 is handled, not the status code:
+#   * a query that ran too long -> {"message":"Command timed out"}
+#   * a spurious token rejection mid-run, on a token valid either side of it
+#   * a missing scope -> retrying never helps, and the fix is a new token
+TRANSIENT_401 = ("command timed out", "invalid private integration token")
+SCOPE_401 = "not authorized for this scope"
 
 
 class GHLClient:
@@ -87,30 +109,37 @@ class GHLClient:
                 continue
 
             # 429 and 5xx are transient; everything else is a real answer --
-            # except 401, which this API also returns for conditions that have
-            # nothing to do with authorisation. Two seen live, both transient
-            # and both recovering on the next attempt with the same token:
+            # except 401, which this API returns for three unrelated conditions,
+            # only one of which is permanent. Two are transient and recover on
+            # the next attempt with the same token:
             #
             #   {"message": "Command timed out"}                (slow query)
             #   {"message": "Invalid Private Integration token"} (mid-run, on a
             #       token that worked seconds before and seconds after)
             #
-            # The second one is the dangerous one: it reads as a revoked token,
-            # so it invites re-issuing credentials to fix a blip. On 2026-07-30
-            # it failed 73 contact lookups in one sync run while the token was
+            # The second is the dangerous one: it reads as a revoked token, so it
+            # invites re-issuing credentials to fix a blip. On 2026-07-30 it
+            # failed 73 contact lookups in one sync run while the token was
             # perfectly valid. A genuinely bad token still fails, just after the
             # same bounded retries.
-            transient_auth = resp.status_code == 401 and any(
-                s in resp.text for s in ("Command timed out", "Invalid Private Integration token"))
+            #
+            # The permanent one is a missing scope, handled below: retrying it
+            # never helps, so it raises immediately and carries the fix.
+            body = resp.text
+            transient_auth = (resp.status_code == 401
+                              and any(s in body.lower() for s in TRANSIENT_401))
             if resp.status_code == 429 or resp.status_code >= 500 or transient_auth:
                 if attempt == attempts:
-                    raise GHLError(resp.status_code, method, path, resp.text)
+                    raise GHLError(resp.status_code, method, path, body)
                 time.sleep(float(resp.headers.get("Retry-After", delay)))
                 delay *= 2
                 continue
 
+            if resp.status_code == 401 and SCOPE_401 in body.lower():
+                raise GHLScopeError(resp.status_code, method, path, body)
+
             if resp.status_code >= 400:
-                raise GHLError(resp.status_code, method, path, resp.text)
+                raise GHLError(resp.status_code, method, path, body)
 
             return resp.json() if resp.content else {}
 
