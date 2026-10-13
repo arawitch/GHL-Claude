@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
-from ghl import (segments, sending, reactivation, weekly, rollout, clicks,
+from ghl import (autoregister, segments, sending, reactivation, weekly, rollout, clicks,
                  smstarget, sync as syncmod)
 from ghl.webinarjam import WebinarJamClient, WebinarJamError
 
@@ -438,6 +438,27 @@ def _sync_one(client: GHLClient, wj, args, evergreen: bool = False) -> int:
     return 1 if rep.errors else 0
 
 
+def cmd_autoregister(client: GHLClient, args) -> int:
+    """Register everyone who replied YES to the invite text."""
+    wj = WebinarJamClient(product=args.product)
+    rep = autoregister.run(client, wj, args.webinar_id, args.schedule_id,
+                           reply_tag=args.reply_tag, done_tag=args.done_tag,
+                           apply=args.apply)
+    mode = "APPLYING" if args.apply else "DRY RUN"
+    print(f"{mode}: {args.product} webinar {args.webinar_id} schedule {args.schedule_id}")
+    print(f"  replied YES, not yet registered  {rep['pending']:>6,}")
+    print(f"  registered now                   {rep['registered']:>6,}")
+    print(f"  already in WebinarJam            {rep['already']:>6,}")
+    print(f"  no email address                 {rep['no_email']:>6,}")
+    print(f"  failed                           {rep['failed']:>6,}")
+    for d in rep["detail"][:10]:
+        print(f"    ! {d}")
+    if not args.apply and rep["pending"]:
+        print("\n  re-run with --apply to register them")
+    return 1 if rep["failed"] or any(
+        d[0] == "REGISTERED BUT NOT TAGGED" for d in rep["detail"]) else 0
+
+
 def cmd_register(client: GHLClient, args) -> None:
     """Register people who clicked a one-click link but never landed in WebinarJam.
 
@@ -814,6 +835,19 @@ def main() -> int:
                         "evergreen traffic from outside GHL is followable")
     p.add_argument("--apply", action="store_true", help="write tags (default is a dry run)")
     p.set_defaults(func=cmd_sync_webinar)
+
+    p = sub.add_parser("autoregister",
+                       help="register everyone who replied YES to the invite text")
+    p.add_argument("--product", default="everwebinar",
+                   choices=["everwebinar", "webinarjam"])
+    p.add_argument("--webinar-id", type=int, required=True)
+    p.add_argument("--schedule-id", type=int, required=True,
+                   help="global schedule id, from sync-webinar --webinar-id N")
+    p.add_argument("--reply-tag", default=autoregister.REPLY_TAG,
+                   help="tag the GHL workflow adds when someone replies YES")
+    p.add_argument("--done-tag", default=autoregister.DONE_TAG)
+    p.add_argument("--apply", action="store_true", help="register them")
+    p.set_defaults(func=cmd_autoregister)
 
     p = sub.add_parser("register")
     p.add_argument("--webinar-id", type=int, required=True)
