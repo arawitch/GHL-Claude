@@ -8,9 +8,13 @@ name: Sync webinar attendance to GHL
 # replay views accumulate for weeks: 9/24 had 23 replay viewers recorded none of
 # whom existed in GHL, and 10/1 went from 35 attendees to 46 and 9 replay
 # viewers to 17 over the week nobody was syncing it.
+#
+# The hourly schedule is off as of 2026-10-19: every run was failing (an
+# unretried WebinarJam read timeout) and mailing a failure notice. Restore the
+# `schedule:` block below once the sync runs clean again.
 on:
-  schedule:
-    - cron: "17 * * * *"      # :17, not :00, where every other cron piles up
+  # schedule:
+  #   - cron: "17 * * * *"    # :17, not :00, where every other cron piles up
   workflow_dispatch:
     inputs:
       product:
