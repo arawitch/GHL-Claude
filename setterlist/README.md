@@ -46,3 +46,24 @@ base), subscribing to the newsletter (72%) and the account's own tier 1 tag
 (59%); a replay view is worth nothing, and anyone who has no-showed before
 shows 9% of the time. Booking rate on a conversation is high (10 of 17), so
 dials and pickups are the constraint, not the pitch.
+
+## Copying people between sub-accounts (2026-10-26)
+
+    python3 copy_main.py   # match a main-account list against SMS, tag or create
+    python3 sync_tags.py   # make the SMS tags match the built lists exactly
+    python3 untag.py       # remove a list tag from people who overlap an earlier list
+
+Two things to know before copying anyone. First, `POST /contacts/upsert`
+matches on email and phone and returns the existing contact instead of making
+a second one, so it is the only safe way to add a contact to an account that
+already has a duplicate problem. Second, a person who looks main-account-only
+usually is not: of 135 such people, 135 already had an SMS record, 25 of
+which this script could not find by either key because they genuinely had
+none. Nine of them were excluded in SMS for reasons their main record did not
+show (a product tag, global DND, a won opportunity), so re-run the exclusion
+checks against the SMS record before tagging it.
+
+`list2.py` now prefers the SMS record whenever the same person exists in both
+accounts. Before that fix it kept whichever record scored higher, which hid
+113 taggable SMS contacts behind their main-account twins and put 13 people
+on two lists at once.

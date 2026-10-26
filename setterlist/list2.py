@@ -102,11 +102,12 @@ print("eligible pool, nobody called yet:", len(eligible))
 
 # de-duplicate the same person across the two accounts, keeping the SMS record
 seen, uniq = {}, []
-for r in sorted(eligible, key=lambda r: (-r["score"], r["loc"] != "sms")):
-    k = (r.get("email") or "").strip().lower() or r["phone"]
-    k2 = r["phone"]
-    if k in seen or k2 in seen: continue
-    seen[k] = seen[k2] = r; uniq.append(r)
+for r in sorted(eligible, key=lambda r: (r["loc"] != "sms", -r["score"])):
+    ks = [r["phone"]]
+    if r.get("email"): ks.append((r["email"] or "").strip().lower())
+    if any(k in seen for k in ks): continue
+    for k in ks: seen[k] = r
+    uniq.append(r)
 print("unique people:", len(uniq))
 
 def sheet(rows, path, title):

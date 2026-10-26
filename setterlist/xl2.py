@@ -24,9 +24,9 @@ def add(path, title, widths, numcols=(0,)):
     return len(rows) - 1
 
 n_fresh = add("list-fresh.csv", "1 New leads", [6,24,16,30,64,7,10,18,16,22,14,12,22,40], (0,5,6))
-n_show  = add("list-showup.csv", "2 Webinar + newsletter", [6,24,16,30,64,7,10,18,16,22,14,12,22,40], (0,5,6))
+n_show  = add("list-showup-all.csv", "2 Webinar + newsletter", [6,24,16,30,64,7,10,18,16,22,14,12,22,40], (0,5,6))
 n_fin   = add("list-finish.csv", "3 Finish the 10-19 list", [6,16,24,16,30,64,7,22,12,22,40], (0,6))
-n_main  = add("list-showup-main.csv", "Main account, not tagged", [6,24,16,30,64,7,10,18,16,22,14,12,22,40], (0,5,6))
+n_main = 25
 
 ws = wb.create_sheet("What week one showed", 0)
 L = [("Juan's first week on the 10/19 list, and what it tells us", True),
@@ -49,9 +49,9 @@ L = [("Juan's first week on the 10/19 list, and what it tells us", True),
  ("", False),
  ("The three lists in this workbook", True),
  (f"1 New leads — {n_fresh} people, everyone who has come in within 60 days and has not been dialled, newest first. This is the highest pickup rate available and it is small, because only about 240 new leads reach the SMS account in a month. {110} of them are tagged \"10/26 juan new leads\".", False),
- (f"2 Webinar + newsletter — {n_show} people who attended a webinar live or subscribe to the newsletter, with prior no-shows kept out. Lower pickup than the new leads, but the ones who do answer are the ones who turn up. All {n_show} are tagged \"10/26 juan webinar + newsletter\".", False),
+ (f"2 Webinar + newsletter — {n_show} people who attended a webinar live or subscribe to the newsletter, with prior no-shows kept out. Lower pickup than the new leads, but the ones who do answer are the ones who turn up. All {n_show} are tagged \"10/26 juan webinar + newsletter\" in the SMS account. {n_main} of them had no SMS record at all and were copied in from the main account, tagged \"copied from main account\"; the other 225 were already there.", False),
  (f"3 Finish the 10/19 list — the {n_fin} people from last week he never dialled, still in rank order, with 63 of them priority A. Already tagged from last week.", False),
- (f"Main account, not tagged — {n_main} more people with the same webinar and newsletter profile who exist only in the main/EMAIL sub-account, so they could not be tagged in SMS. Say the word and I will copy them across.", False),
+ ("Everyone on list 2 is now in the SMS sub-account and tagged, so there is nothing left in the main account to chase. Thirteen people who turned out to be on the 10/19 list or already dialled were taken back off the tag, so the three lists stay separate.", False),
  ("", False),
  ("Every list excludes the same things as before: anyone who owns the bot, the navigator or futures, anyone do-not-call or without a dialable number, anyone with an appointment already booked, and anyone disqualified. People Juan has already dialled or tagged for long-term nurture are kept out too, and nobody appears on two lists.", False),
  ("", False),
