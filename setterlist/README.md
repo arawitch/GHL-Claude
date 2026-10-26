@@ -28,3 +28,21 @@ clicks and an open opportunity in an early stage; see the second sheet of the
 spreadsheet for the weights in plain language.
 
 Reads are harmless. `tag.py` is the only script that writes to GHL.
+
+## Week-two scripts (2026-10-26)
+
+    python3 analyze.py   # Juan's dials, pickups, bookings and shows on a handed-over list
+    python3 showup.py    # show vs no-show predictors across every appointment in both accounts
+    python3 list2.py     # the next lists, ordered by what the above two found
+    python3 finish1.py   # what is left undialled from the previous list
+    python3 tag2.py      # tag the new lists in the SMS sub-account
+    python3 xl2.py       # the workbook, findings sheet first
+
+What they found, in case it saves rediscovering it: pickup is driven almost
+entirely by how new the lead is (25% under a month, 7% over six months) and
+by the hour of the dial in the contact's own time zone (29% at 1pm, 9% at
+3pm). Show-up is driven by having attended a webinar live (75% against a 33%
+base), subscribing to the newsletter (72%) and the account's own tier 1 tag
+(59%); a replay view is worth nothing, and anyone who has no-showed before
+shows 9% of the time. Booking rate on a conversation is high (10 of 17), so
+dials and pickups are the constraint, not the pitch.
