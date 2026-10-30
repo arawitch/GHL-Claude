@@ -18,3 +18,7 @@ replay-emails.pdf
 followup-sheet.html
 followup-preview/
 replay-click-followup.pdf
+
+# Conversation/message dumps contain customer PII and private message bodies
+conv_*.jsonl
+*.jsonl
