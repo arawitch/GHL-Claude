@@ -20,6 +20,44 @@ TAG = 'ai qualifying v2'
 COLS = ['sent', 'delivered', 'replied', 'qualified', 'booked',
         'signal_pilot', 'wants_link', 'opted_out']
 
+def fetch_messages(conv_id, cap=600):
+    """Every message in a conversation, oldest first.
+
+    `/conversations/{id}/messages` returns only the newest page (20 by default,
+    100 at most), so a long thread hides its opener and the daily counts come
+    out unstable. Page back with `lastMessageId` until the API says there is no
+    more.
+    """
+    out, last = [], None
+    while len(out) < cap:
+        params = {'limit': 100}
+        if last:
+            params['lastMessageId'] = last
+        box = cl.request('GET', '/conversations/%s/messages' % conv_id,
+                         params=params).get('messages', {})
+        batch = box.get('messages', []) or []
+        out += batch
+        if not box.get('nextPage') or not batch:
+            break
+        last = batch[-1]['id']
+    return out
+
+
+def booked_since(contact_id, since):
+    """True when the contact holds an appointment starting after `since`."""
+    try:
+        evs = cl.get('/contacts/%s/appointments' % contact_id).get('events', []) or []
+    except Exception:
+        return False
+    cut = str(since)[:10]
+    for e in evs:
+        if (e.get('appointmentStatus') or '').lower() in ('cancelled', 'noshow'):
+            continue
+        if str(e.get('startTime') or '')[:10] >= cut:
+            return True
+    return False
+
+
 outdir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'dashout')
 cl = GHLClient(os.environ['GHL_SMS_API_KEY'], os.environ['GHL_SMS_LOCATION_ID'])
 LOC = os.environ['GHL_SMS_LOCATION_ID']
@@ -41,7 +79,11 @@ for c in contacts:
     cv = cl.get('/conversations/search', contactId=c['id']).get('conversations', [])
     if not cv:
         continue
-    ms = cl.get('/conversations/%s/messages' % cv[0]['id']).get('messages', {}).get('messages', [])
+    # A contact can hold more than one conversation and their order is not
+    # stable, so merge every one of them rather than trusting the first.
+    ms = []
+    for conv in cv:
+        ms += fetch_messages(conv['id'])
     ms = sorted(ms, key=lambda x: x.get('dateAdded') or '')
     op = [m for m in ms if OPENER in (m.get('body') or '').lower()]
     if not op:
@@ -55,7 +97,10 @@ for c in contacts:
         d['replied'] += 1
     if 'ai high ticket' in tags:
         d['qualified'] += 1
-    if 'ai booked high ticket' in tags:
+    if 'ai booked high ticket' in tags or booked_since(c['id'], o['dateAdded']):
+        # The bot tags its own bookings, but a rep who plugs the lead into
+        # their calendar by hand does not, so also count a real appointment
+        # that starts after the opener went out.
         d['booked'] += 1
     if 'ai signal pilot fit' in tags:
         d['signal_pilot'] += 1
