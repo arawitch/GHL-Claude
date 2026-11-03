@@ -18,7 +18,14 @@ from ghl.client import GHLClient
 OPENER = 'are you still trading'
 TAG = 'ai qualifying v2'
 COLS = ['sent', 'delivered', 'replied', 'qualified', 'booked',
+        'showed', 'no_showed', 'clicked',
         'signal_pilot', 'wants_link', 'opted_out']
+
+# Written by the "Conversation AI - link clicked" workflow, whose trigger is
+# GHL's Trigger Link Clicked. There is no click API: GET /links/ returns 401
+# ("token is not authorized for this scope") and GHL exposes no per-contact
+# click report, so a workflow that tags on click is the only way to count them.
+CLICK_TAG = 'ai clicked link'
 
 def fetch_messages(conv_id, cap=600):
     """Every message in a conversation, oldest first.
@@ -43,19 +50,33 @@ def fetch_messages(conv_id, cap=600):
     return out
 
 
-def booked_since(contact_id, since):
-    """True when the contact holds an appointment starting after `since`."""
+def appointments_since(contact_id, since):
+    """Appointments for this contact that start on or after `since`.
+
+    One call serves both the booked count and the show rate, so it is made
+    once per contact rather than twice.
+    """
     try:
         evs = cl.get('/contacts/%s/appointments' % contact_id).get('events', []) or []
     except Exception:
-        return False
+        return []
     cut = str(since)[:10]
-    for e in evs:
-        if (e.get('appointmentStatus') or '').lower() in ('cancelled', 'noshow'):
-            continue
-        if str(e.get('startTime') or '')[:10] >= cut:
-            return True
-    return False
+    return [e for e in evs if str(e.get('startTime') or '')[:10] >= cut]
+
+
+def outcome_counts(appts):
+    """(showed, no_showed) across appointments that have already been judged.
+
+    GHL's appointmentStatus is one of new/confirmed/showed/noshow/cancelled/
+    invalid. Only `showed` and `noshow` are outcomes; a call still in the
+    future sits at `confirmed` and must not be counted as either, or the show
+    rate reads low all day and climbs only after the calls happen.
+    """
+    showed = sum(1 for e in appts
+                 if (e.get('appointmentStatus') or '').lower() == 'showed')
+    missed = sum(1 for e in appts
+                 if (e.get('appointmentStatus') or '').lower() == 'noshow')
+    return showed, missed
 
 
 outdir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'dashout')
@@ -97,11 +118,19 @@ for c in contacts:
         d['replied'] += 1
     if 'ai high ticket' in tags:
         d['qualified'] += 1
-    if 'ai booked high ticket' in tags or booked_since(c['id'], o['dateAdded']):
+    appts = appointments_since(c['id'], o['dateAdded'])
+    live = [e for e in appts
+            if (e.get('appointmentStatus') or '').lower() != 'cancelled']
+    if 'ai booked high ticket' in tags or live:
         # The bot tags its own bookings, but a rep who plugs the lead into
         # their calendar by hand does not, so also count a real appointment
         # that starts after the opener went out.
         d['booked'] += 1
+    showed, missed = outcome_counts(appts)
+    d['showed'] += showed
+    d['no_showed'] += missed
+    if CLICK_TAG in tags:
+        d['clicked'] += 1
     if 'ai signal pilot fit' in tags:
         d['signal_pilot'] += 1
     if 'ai wants signal pilot link' in tags:
