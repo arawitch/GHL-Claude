@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "Meta object id -> human name, for leads whose ads append {{campaign.id}} /",
+    "{{adset.id}} / {{ad.id}} instead of the matching .name macros.",
+    "Read from Ads Manager on 2026-11-03 for ad account act=1144346326464288.",
+    "To refresh: open the ads/adsets/campaigns table in Ads Manager and read",
+    "each row's data-surface=\"/am/table/table_row:<id>\" attribute next to its",
+    "name cell. The Graph API is not reachable from this toolkit.",
+    "`ad-attribution --report` lists ids that are missing from this file."
+  ],
+  "campaigns": {
+    "120249892092040617": "JH Schedules - 10/9/26",
+    "120248828199470617": "JH Schedules- 8/3/26",
+    "120249733031900617": "JH Schedules - 9/28/26",
+    "120249465332380617": "JH Schedules- 9/10/26",
+    "120248466491050617": "[JH] Schedules - 7/17/26",
+    "120248647940880617": "[JH] Schedules - 7/27/26",
+    "120241611943440617": "*2026 VSL Campaign*",
+    "120231858469380617": "🟢 | Ad boost | Schedule Campaign | CBO",
+    "120242439892920617": "UGC Campaign",
+    "120242949008780617": "Targeted UGC Campaign"
+  },
+  "adsets": {
+    "120249892092060617": "Broad",
+    "120248828199480617": "Targeted Ad set",
+    "120249733031870617": "Broad",
+    "120249465332400617": "Targeted Ad set 2",
+    "120248466491070617": "Ad Set 1",
+    "120248647940870617": "Ad Set 1"
+  },
+  "ads": {
+    "120249892092000617": "Ad 1",
+    "120249892092010617": "Ad 2",
+    "120249892092020617": "Ad 3",
+    "120249892092030617": "Ad 4",
+    "120249892092050617": "Sept Ad 1",
+    "120249892091990617": "Sept Ad 2",
+    "120248828407240617": "Ad 1 - Copy",
+    "120248828412570617": "Ad 2 - Copy",
+    "120248828418370617": "Ad 3 - Copy",
+    "120248828422780617": "Ad 4 - Copy",
+    "120248828307450617": "Ad 1 Hook 2",
+    "120249733031890617": "Ad 1",
+    "120249733031880617": "Ad 2",
+    "120249733031860617": "Ad 3",
+    "120249733031850617": "Ad 4",
+    "120249733048670617": "Sept Ad 1",
+    "120249733048660617": "Sept Ad 2",
+    "120249465332410617": "Sept Ad 1",
+    "120249465332420617": "Sept Ad 2",
+    "120248466491060617": "Ad 1",
+    "120248647940890617": "Ad 1",
+    "120248647940900617": "Ad 2",
+    "120248647946470617": "Ad 3",
+    "120248648110390617": "Ad 4"
+  }
+}

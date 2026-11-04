@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ghl.client import GHLClient, GHLError
 from ghl import (segments, sending, reactivation, weekly, rollout, clicks,
-                 smstarget, sync as syncmod)
+                 smstarget, sync as syncmod, adattr)
 from ghl.webinarjam import WebinarJamClient, WebinarJamError
 
 
@@ -729,6 +729,43 @@ def cmd_untag(client: GHLClient, args) -> None:
         print("\n  re-run with --apply to write it")
 
 
+
+def cmd_ad_attribution(client: GHLClient, args) -> int:
+    """Decode Meta ids on recent leads into readable campaign/ad set/creative."""
+    token = os.environ.get("GHL_SMS_API_KEY")
+    location = os.environ.get("GHL_SMS_LOCATION_ID")
+    if not token or not location:
+        print("GHL_SMS_API_KEY and GHL_SMS_LOCATION_ID must be set", file=sys.stderr)
+        return 1
+    sms = GHLClient(token=token, location_id=location)
+    table = adattr.load_map()
+
+    filters = [segments.added_between(args.since, args.until)] if args.since or args.until else []
+    contacts = sms.search_contacts(filters=segments.all_of(*filters) if filters else [],
+                                   max_records=args.limit)
+    result = adattr.annotate(sms, contacts, table,
+                             write_notes=not args.no_notes,
+                             write_fields=not args.no_fields,
+                             dry_run=args.dry_run)
+
+    stats = result["stats"]
+    verb = "would annotate" if args.dry_run else "annotated"
+    print(f"{stats['seen']} contacts read, {stats['decoded']} came from an ad, "
+          f"{verb} {stats['decoded'] - stats['skipped_annotated']}, "
+          f"{stats['skipped_annotated']} already done, "
+          f"{stats['no_ad_attribution']} had no ad attribution")
+    if not args.dry_run:
+        print(f"written: {stats['written']}, failed: {stats['failed']}")
+    for line in result["examples"]:
+        print(f"  e.g. {line}")
+    if result["undecoded"]:
+        print("Meta ids missing from ghl/ad_id_map.json "
+              "(add them and re-run to fill these in):")
+        for bad, count in sorted(result["undecoded"].items(), key=lambda kv: -kv[1]):
+            print(f"  {bad}  {count} leads")
+    return 1 if stats["failed"] else 0
+
+
 def cmd_count(client: GHLClient, args) -> None:
     print(f"{client.count_contacts(build_filters(args)):,} contact(s) match")
 
@@ -875,6 +912,17 @@ def main() -> int:
     p.add_argument("--limit", type=int)
     p.set_defaults(func=cmd_sendlist)
 
+    p = sub.add_parser("ad-attribution",
+                       help="decode Meta campaign/ad set/ad ids on leads into "
+                            "names, as a contact note and custom fields")
+    p.add_argument("--since", default="2026-07-01", help="ISO date, default 2026-07-01")
+    p.add_argument("--until", default="2100-01-01", help="ISO date")
+    p.add_argument("--limit", type=int, help="stop after this many contacts")
+    p.add_argument("--dry-run", action="store_true", help="decode and report, write nothing")
+    p.add_argument("--no-notes", action="store_true", help="skip the contact note")
+    p.add_argument("--no-fields", action="store_true", help="skip the custom fields")
+    p.set_defaults(func=cmd_ad_attribution, needs_main_client=False)
+
     p = sub.add_parser("count"); add_filter_args(p); p.set_defaults(func=cmd_count)
 
     p = sub.add_parser("export")
@@ -888,7 +936,10 @@ def main() -> int:
         # `or 0` because most commands return None; the ones that can partly
         # fail return a status, and dropping it is how a scheduled run reports
         # success having written nothing.
-        return args.func(GHLClient(), args) or 0
+        # Commands that only touch the SMS sub-account build their own client
+        # from GHL_SMS_API_KEY, so they must not require the main-account token.
+        main_client = GHLClient() if getattr(args, "needs_main_client", True) else None
+        return args.func(main_client, args) or 0
     except GHLError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

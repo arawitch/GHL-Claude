@@ -1,0 +1,63 @@
+name: Decode Meta ad ids on new leads
+
+# The ads built from July 2026 onward append {{campaign.id}} / {{adset.id}} /
+# {{ad.id}} to the landing page instead of the .name macros, so GoHighLevel
+# stores 18-digit numbers where it used to store campaign and creative names.
+# This run decodes them into a contact note and the ad_name / campaign_id /
+# ad_id / utm_* fields, which is a workaround: the real fix is to change the
+# ads' URL parameters, and once that is done this only has history to decode.
+#
+# Every four hours rather than daily, so a lead that comes in during the day is
+# annotated while the sales team is still working it. Each run only looks a week
+# back and skips contacts it has already annotated, so the cost is a couple of
+# hundred reads and almost no writes.
+#
+# A red scheduled run emails the repository owner, which is what got the
+# webinar sync switched off. The decode step is therefore written not to fail
+# on the one thing that will happen routinely -- a new ad whose id is not in
+# the lookup table yet. That is reported, not raised.
+on:
+  schedule:
+    - cron: "41 */4 * * *"    # :41, away from the :00 cron pile-up
+  workflow_dispatch:
+    inputs:
+      since:
+        description: only leads added on or after this ISO date
+        default: "2026-07-01"
+      dry_run:
+        description: decode and report, write nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ad-attribution
+  cancel-in-progress: false
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    env:
+      GHL_SMS_API_KEY: ${{ secrets.GHL_SMS_API_KEY }}
+      GHL_SMS_LOCATION_ID: ${{ secrets.GHL_SMS_LOCATION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+
+      # A scheduled run looks a week back rather than at everything since
+      # July: contacts already annotated are skipped, but reading 900 of them
+      # to skip 890 is wasted requests.
+      # The run reports ids it could not decode and exits 0 for them; it only
+      # goes red if GoHighLevel actually rejected a write.
+      - name: Decode
+        run: |
+          since="${{ github.event.inputs.since }}"
+          if [ -z "$since" ]; then since=$(date -u -d '7 days ago' +%F); fi
+          echo "decoding leads added since $since"
+          python3 cli.py ad-attribution --since "$since" \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}

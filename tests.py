@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 import types
 
-from ghl import campaigns, reactivation, segments, sending, smstarget, sync, weekly
+from ghl import adattr, campaigns, reactivation, segments, sending, smstarget, sync, weekly
 from ghl import webinarjam
 from ghl.client import GHLClient, GHLError, GHLScopeError
 
@@ -503,8 +503,98 @@ def test_two_registrations_on_one_record_merge_rather_than_fight():
           "10/1 replay" not in added)
 
 
+
+# -- ad attribution decoding ------------------------------------------------
+# Three ways this quietly produces a plausible answer: it annotates a lead that
+# never came from an ad, it reports a pre-July ad's unrelated utm_term id as a
+# missing lookup, or it re-annotates a contact a previous run already did and
+# leaves two notes on the record.
+
+AD_MAP = {
+    "campaigns": {"120249892092040617": "JH Schedules - 10/9/26"},
+    "adsets": {"120249892092060617": "Broad"},
+    "ads": {"120249892092000617": "Ad 1"},
+}
+
+
+def test_id_based_attribution_decodes_to_names():
+    decoded = adattr.decode({
+        "utmSource": "ig", "utmMedium": "paid",
+        "campaign": "120249892092040617",
+        "utmTerm": "120249892092060617",
+        "utmContent": "120249892092000617",
+        "url": "https://ad.universityofoptions.com/schedule/sta?fbclid=abc",
+    }, AD_MAP)
+    check("campaign id decodes", decoded["campaign"] == "JH Schedules - 10/9/26", str(decoded))
+    check("ad set id decodes", decoded["adset"] == "Broad", str(decoded))
+    check("ad id decodes", decoded["creative"] == "Ad 1", str(decoded))
+    check("platform is spelled out", decoded["platform"] == "Instagram", str(decoded))
+    check("raw ids are kept alongside the names",
+          decoded["campaign_id"] == "120249892092040617"
+          and decoded["ad_id"] == "120249892092000617", str(decoded))
+    check("query string is dropped from the landing page",
+          decoded["landing_page"].endswith("/schedule/sta"), str(decoded))
+    check("nothing is reported as missing", decoded["undecoded"] == "", str(decoded))
+
+
+def test_name_based_attribution_is_left_alone():
+    # Pre-July ads sent names, put the ad set name in utm_medium, and an id in
+    # utm_term that is not an ad set at all. That id must not be reported.
+    decoded = adattr.decode({
+        "utmSource": "facebook", "utmMedium": "Testing Phase",
+        "campaign": "*2026 VSL Campaign*",
+        "utmTerm": "120241611943720617",
+        "utmContent": "Dan- Multi Creative",
+    }, AD_MAP)
+    check("existing campaign name survives", decoded["campaign"] == "*2026 VSL Campaign*",
+          str(decoded))
+    check("ad set comes from utm_medium", decoded["adset"] == "Testing Phase", str(decoded))
+    check("an unrelated utm_term id is not flagged as missing",
+          decoded["undecoded"] == "", str(decoded))
+
+
+def test_unknown_id_is_reported_not_invented():
+    decoded = adattr.decode({"campaign": "129999999999999999",
+                             "utmContent": "128888888888888888",
+                             "utmMedium": "paid", "utmSource": "fb"}, AD_MAP)
+    check("unknown ids stay as ids", decoded["campaign"] == "129999999999999999", str(decoded))
+    check("unknown ids are listed for the lookup table",
+          decoded["undecoded"] == "129999999999999999,128888888888888888", str(decoded))
+
+
+def test_non_ad_traffic_is_not_annotated():
+    for attribution in ({"sessionSource": "Direct traffic", "medium": "calendar"},
+                        {"medium": "csv_import"},
+                        {}):
+        check("no note for traffic with no ad behind it",
+              adattr.decode(attribution, AD_MAP) is None, str(attribution))
+
+
+def test_a_second_run_skips_what_the_first_one_wrote():
+    done = {"customFields": [{"id": adattr.FIELD_IDS["ad_name"], "value": "Ad 1"}]}
+    blank = {"customFields": [{"id": adattr.FIELD_IDS["ad_name"], "value": ""}]}
+    check("annotated contact is skipped", adattr.already_annotated(done) is True)
+    check("empty field is not mistaken for done", adattr.already_annotated(blank) is False)
+    check("contact with no fields is not skipped", adattr.already_annotated({}) is False)
+
+
+def test_shipped_lookup_table_covers_the_live_campaigns():
+    table = adattr.load_map()
+    for campaign in ("120249892092040617", "120248828199470617"):
+        check(f"live campaign {campaign} is in the shipped map",
+              campaign in table["campaigns"])
+    check("map has the ads for the live campaigns",
+          len(table["ads"]) >= 20, str(len(table["ads"])))
+
+
 def main() -> int:
-    for fn in [test_401_is_two_different_errors,
+    for fn in [test_id_based_attribution_decodes_to_names,
+               test_name_based_attribution_is_left_alone,
+               test_unknown_id_is_reported_not_invented,
+               test_non_ad_traffic_is_not_annotated,
+               test_a_second_run_skips_what_the_first_one_wrote,
+               test_shipped_lookup_table_covers_the_live_campaigns,
+               test_401_is_two_different_errors,
                test_email_dnd_covers_every_on_status,
                test_suppression_tags_reach_every_send_tier,
                test_validated_tier_reports_missing_data,
