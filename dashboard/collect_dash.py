@@ -19,7 +19,21 @@ OPENER = 'are you still trading'
 TAG = 'ai qualifying v2'
 COLS = ['sent', 'delivered', 'replied', 'qualified', 'booked',
         'showed', 'no_showed', 'clicked',
-        'signal_pilot', 'wants_link', 'opted_out']
+        'signal_pilot', 'wants_link',
+        'replied_ok', 'hostile', 'opted_out']
+
+# Written by the "Complaint or refund" branch that every Conversation AI step
+# in the qualifier carries. That branch sends nothing back - it only tags - so
+# this is the only record that a reply was hostile or a refund demand.
+#
+# The three reply buckets below are mutually exclusive and together they add
+# up to `replied`: hostile wins over opted_out, because a complaint exit also
+# writes `do not contact` and would otherwise be counted twice.
+#
+# History note: the 27 contacts suppressed by hand on 2026-11-04, before this
+# branch existed, carry `do not contact` with no reason tag, so they land in
+# opted_out. Days before 2026-11-04 therefore under-report `hostile`.
+COMPLAINT_TAG = 'ai complaint'
 
 # Written by the "Conversation AI - link clicked" workflow, whose trigger is
 # GHL's Trigger Link Clicked. There is no click API: GET /links/ returns 401
@@ -114,7 +128,9 @@ for c in contacts:
     d['sent'] += 1
     if o.get('status') == 'delivered':
         d['delivered'] += 1
-    if any(m.get('direction') == 'inbound' and (m.get('dateAdded') or '') > o['dateAdded'] for m in ms):
+    replied = any(m.get('direction') == 'inbound'
+                  and (m.get('dateAdded') or '') > o['dateAdded'] for m in ms)
+    if replied:
         d['replied'] += 1
     if 'ai high ticket' in tags:
         d['qualified'] += 1
@@ -136,8 +152,18 @@ for c in contacts:
     if 'ai wants signal pilot link' in tags:
         d['wants_link'] += 1
     sms = (c.get('dndSettings') or {}).get('SMS') or {}
-    if 'do not contact' in tags or sms.get('status') in ('permanent', 'active'):
+    hostile = COMPLAINT_TAG in tags
+    stopped = ('do not contact' in tags
+               or sms.get("status") in ("permanent", "active"))
+    if hostile:
+        d['hostile'] += 1
+    elif stopped:
         d['opted_out'] += 1
+    if replied and not hostile and not stopped:
+        # Everything else that answered: interested, asking questions, or
+        # turning one offer down politely. Not a judgement on the content,
+        # just "answered and did not blow up or ask to be left alone".
+        d['replied_ok'] += 1
 
 (outdir / 'days').mkdir(parents=True, exist_ok=True)
 (outdir / 'meta').mkdir(parents=True, exist_ok=True)
