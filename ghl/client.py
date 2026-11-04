@@ -152,6 +152,9 @@ class GHLClient:
     def post(self, path: str, payload: dict) -> dict[str, Any]:
         return self.request("POST", path, json=payload)
 
+    def put(self, path: str, payload: dict) -> dict[str, Any]:
+        return self.request("PUT", path, json=payload)
+
     # -- reads used across the toolkit ---------------------------------
 
     def location(self) -> dict[str, Any]:

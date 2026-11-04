@@ -1,0 +1,55 @@
+name: Decode Meta ad ids on new leads
+
+# The ads built from July 2026 onward append {{campaign.id}} / {{adset.id}} /
+# {{ad.id}} to the landing page instead of the .name macros, so GoHighLevel
+# stores 18-digit numbers where it used to store campaign and creative names.
+# This run decodes them into a contact note and the ad_name / campaign_id /
+# ad_id / utm_* fields, which is a workaround: the real fix is to change the
+# ads' URL parameters, and once that is done this only has history to decode.
+#
+# The schedule is deliberately commented out. Turning it on sends a failure
+# email every time a run goes red, which is why the webinar sync was switched
+# off, so it stays manual until Audry asks for it.
+on:
+  # schedule:
+  #   - cron: "41 13 * * *"     # 13:41 UTC daily, away from the :00 pile-up
+  workflow_dispatch:
+    inputs:
+      since:
+        description: only leads added on or after this ISO date
+        default: "2026-07-01"
+      dry_run:
+        description: decode and report, write nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ad-attribution
+  cancel-in-progress: false
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    env:
+      GHL_SMS_API_KEY: ${{ secrets.GHL_SMS_API_KEY }}
+      GHL_SMS_LOCATION_ID: ${{ secrets.GHL_SMS_LOCATION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+
+      # A scheduled run looks a week back rather than at everything since
+      # July: contacts already annotated are skipped, but reading 900 of them
+      # to skip 890 is wasted requests.
+      - name: Decode
+        run: |
+          since="${{ github.event.inputs.since }}"
+          if [ -z "$since" ]; then since=$(date -u -d '7 days ago' +%F); fi
+          echo "decoding leads added since $since"
+          python3 cli.py ad-attribution --since "$since" \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}

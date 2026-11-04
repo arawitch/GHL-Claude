@@ -72,6 +72,9 @@ python3 cli.py export --tag "weekly newsletter subscriber" --mailable \
 python3 cli.py sync-webinar --product everwebinar --list        # webinar ids
 python3 cli.py sync-webinar --product everwebinar --webinar-id 7
 python3 cli.py sync-webinar --product everwebinar --webinar-id 7 --apply
+
+python3 cli.py ad-attribution --dry-run          # decode Meta ids, write nothing
+python3 cli.py ad-attribution --since 2026-07-01 # write the note and the fields
 ```
 
 `--tag` repeats to mean OR. `--mailable` drops contacts with no email address
@@ -110,6 +113,53 @@ Note that `engaged` and `validated` are alternative narrowings of `safe`, not
 successive ones. `audit` used to print all five figures in a single column,
 which read as one funnel and made the safe list look an order of magnitude
 smaller than it is.
+
+
+## Meta ad attribution: ids where the names used to be
+
+Leads from an ad carry GoHighLevel's `attributionSource`, which is where the
+campaign, ad set and creative live. Attribution did not break — the ads
+changed. The pre-July 2026 ads appended Meta's **name** macros:
+
+    utm_source=facebook&utm_medium={{adset.name}}&utm_campaign={{campaign.name}}
+    &utm_content={{ad.name}}
+
+so a contact read `🟢 | Ad Boost | Schedule Campaign | Cbo` / `Retargeting` /
+`Batch 1 - Video - Ad Copy 2 - Copy`. Every **JH Schedules** campaign, from
+2026-07-17 onward, appends **id** macros instead:
+
+    utm_medium=paid&utm_source=fb|ig&utm_id={{campaign.id}}
+    &utm_campaign={{campaign.id}}&utm_content={{ad.id}}&utm_term={{adset.id}}
+
+so the same fields read `120249892092040617`. Share of sampled leads with a
+readable campaign name: 100% April–June, 72% July, 34% August, 24% September,
+26% October.
+
+The real fix is one line per ad in Ads Manager > Ad > URL parameters:
+
+    utm_source={{site_source_name}}&utm_medium=paid&utm_campaign={{campaign.name}}
+    &utm_term={{adset.name}}&utm_content={{ad.name}}&utm_id={{campaign.id}}
+
+`{{site_source_name}}` keeps the fb/ig split that `utm_source=fb` was giving.
+That is an **ad-level** edit, and ad-level publishes in this account are held
+by a Meta security check only the account owner can clear.
+
+Until then, `cli.py ad-attribution` decodes the numbers. Meta ids are stable,
+so `ghl/ad_id_map.json` maps them to names; each decoded contact gets an "Ad
+attribution" note and the `ad_name` / `ad_id` / `campaign_id` / `utm_campaign`
+/ `utm_content` / `utm_source` custom fields, which already existed in the SMS
+sub-account and were empty on every contact. Contacts whose `ad_name` is
+already filled are skipped, so re-running costs reads and no writes.
+
+**The lookup table needs topping up when new ads launch.** A run prints every
+id it could not decode. To add them, open the campaigns / ad sets / ads table
+in Ads Manager and read each row's `data-surface="/am/table/table_row:<id>"`
+attribute beside its name — the Graph API is not reachable from here, and
+scraping a token out of the page is blocked.
+
+`.github/workflows/ad-attribution.yml` runs it on demand. Its daily schedule is
+commented out on purpose: a red scheduled run emails the account owner, which
+is why the webinar sync was turned off.
 
 ## ⚠️ Three suppression traps
 
