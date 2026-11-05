@@ -35,6 +35,15 @@ LOG = '/mnt/project-files/reengagement/enroll-log.csv'
 # they already own it, are a current member, asked to cancel or refund, or
 # have been suppressed. See the audience-gap notes - "does not include" with
 # several tags in one GHL condition is OR-ish, so the check lives here.
+#
+# Deliberately NOT in this set: the Options Navigator ownership tags
+# `options member`, `options navigator purchased`, `options nav new purchase`
+# and `options nav 4k new purchase`. Audry's call on 2026-11-05: a Navigator
+# owner should only be pulled out if they own the spreads bot TOO. Since
+# every spreads-bot tag below already excludes outright (her 2026-11-02
+# rule), "owns both" is covered by the bot half alone and needs no extra
+# condition. A Navigator owner who does not own the bot stays in the
+# campaign on purpose - the automated side is the thing being sold to them.
 EXCL = {t.strip() for t in """do not contact|never send|ai exclude|complainer|ai complaint
 new bot user|new bot|bot installed|options bot presale|options auto trader
 options navigator purchased|options nav new purchase|options nav 4k new purchase
