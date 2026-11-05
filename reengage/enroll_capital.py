@@ -10,8 +10,16 @@ run picks up where the last one stopped. Every contact is re-checked live
 against GHL before being tagged, because the source CSV's reachability flags
 are a snapshot and people acquire suppressions between runs.
 
+The exclusion check runs against BOTH sub-accounts. The two accounts are
+mirrors of one list but their tag sets are not identical, and ownership is
+sometimes recorded in only one of them: on 2026-11-05 sixty-two people were
+flagged as owners in the main/EMAIL account with no such tag in SMS. The
+workflow's own guard can only see SMS tags, so the cross-account check has to
+happen here, at enrolment, matched on lowercased email.
+
 Usage:  python3 reengage/enroll_capital.py <count> [--go]
-Needs:  GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID
+Needs:  GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID,
+        GHL_EMAIL_API_KEY, GHL_EMAIL_LOCATION_ID
 """
 import sys, os, csv, json, time, pathlib, datetime
 
@@ -40,6 +48,34 @@ am options cancel|am options cancel request|cancelled masters program
 uoo vsl: cancelled|marketmentorappremoval""".replace('\n', '|').split('|') if t.strip()}
 
 
+def excluded_emails_in_email_account():
+    """Lowercased emails carrying any exclusion tag in the main/EMAIL account.
+
+    One search per tag, because GHL's contact search ORs several tags in a
+    single filter and there is no "has any of these tags" that also returns
+    which one matched. Roughly forty short calls, a few seconds in total.
+    """
+    cl = GHLClient(os.environ['GHL_EMAIL_API_KEY'],
+                   os.environ['GHL_EMAIL_LOCATION_ID'])
+    loc = os.environ['GHL_EMAIL_LOCATION_ID']
+    out = set()
+    for tag in sorted(EXCL):
+        page = 1
+        while True:
+            r = cl.request('POST', '/contacts/search', json={
+                'locationId': loc, 'page': page, 'pageLimit': 100,
+                'filters': [{'field': 'tags', 'operator': 'eq', 'value': tag}]})
+            cs = r.get('contacts', []) or []
+            for c in cs:
+                e = (c.get('email') or '').strip().lower()
+                if e:
+                    out.add(e)
+            if len(cs) < 100:
+                break
+            page += 1
+    return out
+
+
 def main():
     want = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 0
     go = '--go' in sys.argv
@@ -55,8 +91,11 @@ def main():
         print('list exhausted: %d of %d already read' % (start, len(rows)))
         return
 
-    stats = {'tagged': 0, 'already': 0, 'excluded': 0, 'dnd': 0, 'nophone': 0,
-             'missing': 0, 'error': 0}
+    other = excluded_emails_in_email_account()
+    print('exclusion tags in the main account cover %d emails' % len(other))
+
+    stats = {'tagged': 0, 'already': 0, 'excluded': 0, 'excl_other': 0,
+             'dnd': 0, 'nophone': 0, 'missing': 0, 'error': 0}
     done, i = [], start
     while i < len(rows) and stats['tagged'] < want:
         r = rows[i]
@@ -77,6 +116,9 @@ def main():
             continue
         if low & EXCL:
             stats['excluded'] += 1
+            continue
+        if (c.get('email') or '').strip().lower() in other:
+            stats['excl_other'] += 1
             continue
         if not c.get('phone'):
             stats['nophone'] += 1
@@ -99,7 +141,8 @@ def main():
             stats['error'] += 1
 
     print('read rows %d..%d of %d' % (start, i, len(rows)))
-    for k in ('tagged', 'already', 'excluded', 'dnd', 'nophone', 'missing', 'error'):
+    for k in ('tagged', 'already', 'excluded', 'excl_other', 'dnd', 'nophone',
+              'missing', 'error'):
         print('  %-9s %d' % (k, stats[k]))
 
     if not go:
