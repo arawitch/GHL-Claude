@@ -17,7 +17,7 @@ from ghl.client import GHLClient
 
 OPENER = 'are you still trading'
 TAG = 'ai qualifying v2'
-COLS = ['sent', 'delivered', 'replied', 'qualified', 'booked',
+COLS = ['sent', 'delivered', 'replied', 'qualified', 'booked', 'cancelled',
         'showed', 'no_showed', 'clicked',
         'signal_pilot', 'wants_link',
         'replied_ok', 'hostile', 'opted_out']
@@ -137,11 +137,20 @@ for c in contacts:
     appts = appointments_since(c['id'], o['dateAdded'])
     live = [e for e in appts
             if (e.get('appointmentStatus') or '').lower() != 'cancelled']
-    if 'ai booked high ticket' in tags or live:
-        # The bot tags its own bookings, but a rep who plugs the lead into
-        # their calendar by hand does not, so also count a real appointment
-        # that starts after the opener went out.
+    if live:
+        # `booked` means a call that is still standing on a calendar. The bot
+        # tags its own bookings, but a rep who plugs the lead into their own
+        # calendar by hand does not, so the appointment itself is the source
+        # of truth rather than the tag.
         d['booked'] += 1
+    elif 'ai booked high ticket' in tags:
+        # The bot booked a call and there is no live appointment left for it.
+        # Two things look the same here: an appointment GHL still holds with
+        # status `cancelled`, and one a rep DELETED outright, which leaves no
+        # event at all - so the tag is the only trace. Joel deletes bot
+        # bookings when the lead turns out to be a member or already owns the
+        # spreads bot, which is most of this column.
+        d['cancelled'] += 1
     showed, missed = outcome_counts(appts)
     d['showed'] += showed
     d['no_showed'] += missed
