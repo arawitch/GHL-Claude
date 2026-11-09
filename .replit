@@ -1,6 +1,7 @@
 # Replit runs the dispute evidence page. Everything it needs lives in Secrets:
 # DISPUTE_PASSWORD, FLASK_SECRET_KEY, GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID,
-# GHL_EMAIL_API_KEY, GHL_EMAIL_LOCATION_ID.
+# GHL_EMAIL_API_KEY, GHL_EMAIL_LOCATION_ID, and optionally SPREADS_BOT_LOOKUP_URL and
+# SPREADS_BOT_LOOKUP_TOKEN for the Spreads Bot proof-of-use section.
 #
 # The dependencies go in a virtual environment rather than the Nix python,
 # whose site-packages does not survive between shell commands. PIP_USER is set

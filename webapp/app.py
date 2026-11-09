@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flask import (Flask, abort, jsonify, redirect, request, send_file,
                    session, url_for)
 
-from ghl import dispute
+from ghl import dispute, spreads_bot
 from ghl.client import GHLClient
 
 PASSWORD = os.environ.get("DISPUTE_PASSWORD", "")
@@ -231,11 +231,15 @@ def build_job(job_id: str, email: str, phone: str, name: str,
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         out = OUT_DIR / f"{slug.strip('-').lower()}-{stamp}-{job_id[:6]}.pdf"
         accepted = dispute.CHECKOUT_ACCEPTANCE.get(checkout, "") if checkout else ""
+        # Spreads Bot proof of use, fetched by EMAIL only: a name match is never auto-added.
+        spreads = spreads_bot.fetch(email)
         dispute.render_pdf(packs, str(out), facts or None, exhibit=exhibit,
-                           acceptance=accepted)
+                           acceptance=accepted,
+                           spreads_blocks=spreads_bot.blocks_for_pdf(spreads, packs))
         with JOBS_LOCK:
             JOBS[job_id].update(state="done", path=str(out),
-                                found=any(p.get("found") for p in packs))
+                                found=any(p.get("found") for p in packs),
+                                spreads=spreads_bot.page_line(spreads))
     except Exception as exc:                          # surfaced on the page
         with JOBS_LOCK:
             JOBS[job_id].update(state="error", error=str(exc)[:400])
@@ -274,7 +278,7 @@ def status_page(job_id: str):
         f"<h1>{esc(job['name']) or 'Evidence pack'}</h1>"
         "<p class=sub id=state>Reading both GoHighLevel accounts&hellip; this "
         "takes about a minute.</p>"
-        "<p id=action></p>"
+        "<p id=action></p><p class=sub id=spreads></p>"
         "<p class=note><a href='/'>New search</a></p>"
         "<script>"
         f"const id={job_id!r};"
@@ -283,6 +287,7 @@ def status_page(job_id: str):
         " if(j.state==='done'){"
         "  document.getElementById('state').textContent = j.found ?"
         "   'Ready.' : 'Built, but no CRM record matched \\u2014 check the spelling.';"
+        "  document.getElementById('spreads').textContent = j.spreads || '';"
         "  document.getElementById('action').innerHTML ="
         "   \"<a href='/pack/\"+id+\"/download'>Download the PDF</a>\"; return; }"
         " if(j.state==='error'){"
@@ -300,7 +305,7 @@ def status(job_id: str):
         job = JOBS.get(job_id)
     if not job:
         abort(404)
-    return jsonify({k: job.get(k) for k in ("state", "error", "found")})
+    return jsonify({k: job.get(k) for k in ("state", "error", "found", "spreads")})
 
 
 @app.get("/pack/<job_id>/download")
