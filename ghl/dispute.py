@@ -357,6 +357,45 @@ def gather(client: GHLClient, email: str = "", phone: str = "",
 # Rendering
 # ---------------------------------------------------------------------------
 
+# The agreement each funnel checkout requires before its "Complete Order"
+# button becomes clickable. The box is a page element, not an order field, so
+# GHL does not record the individual tick: what the pack can state is that the
+# order could not have been placed on that page without it. Verified live on
+# 2026-11-09 by loading each page, opening the order form and reading the
+# checkbox's label with the submit button disabled. Re-verify when a checkout
+# page is edited.
+CHECKOUT_ACCEPTANCE = {
+    "/presale": "I agree to the terms and conditions, bot disclosure and "
+                "understand this is a non-refundable purchase",
+    "/PRESALE": "I agree to the terms and conditions, bot disclosure and "
+                "understand this is a non-refundable purchase",
+    "/bots": "I agree to the terms and conditions, bot disclosure and "
+             "understand this is a non-refundable purchase",
+    "/combo-bot": "I agree to the terms and conditions and money back guarantee "
+                  "for Options Navigator. I understand the Options Auto Traders "
+                  "(value of $3800) are non-refundable and agree to the bot "
+                  "disclosure",
+    "/options-nav--auto-traders-combo":
+        "I agree to the terms and conditions and money back guarantee for "
+        "Options Navigator. I understand the Options Auto Traders (value of "
+        "$3800) are non-refundable and agree to the bot disclosure",
+    "/deal": "I agree to the terms and conditions and money back guarantee",
+    "/options-nav-2yr": "I agree to the terms and conditions and money back "
+                        "guarantee",
+    "/join": "I agree to the terms and conditions and money back guarantee",
+    "/monthly-page": "I agree to the terms and conditions, refund policy, "
+                     "disclaimers, and privacy policy",
+}
+
+
+def acceptance_for(page_url: str) -> str:
+    """The checkbox text the buyer had to tick on the page they bought from."""
+    for path, text in CHECKOUT_ACCEPTANCE.items():
+        if page_url and page_url.rstrip("/").endswith(path):
+            return text
+    return ""
+
+
 POLICY_LINES = [
     ("Terms & Conditions, 'Refund Policy' section",
      "https://universityofoptions.com/terms",
@@ -407,7 +446,12 @@ def transaction_summary(packs: list[dict]) -> dict:
             facts.setdefault("Payment status", str(txn["status"]))
             method = txn.get("method") or ""
             if "last4" in method:
-                facts.setdefault("Card used", method)
+                try:
+                    card = json.loads(method).get("card", {})
+                    facts.setdefault("Card used", f"{card.get('brand','')} ending "
+                                                  f"{card.get('last4','')}".strip())
+                except (ValueError, AttributeError):
+                    facts.setdefault("Card used", method)
     return facts
 
 
@@ -464,11 +508,29 @@ def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None) ->
         story.append(table([["Field", "Value"]] +
                            [[k, v] for k, v in order_facts.items()], [1.9, 4.6]))
 
-    story.append(Paragraph("2. Terms the cardholder accepted at purchase", h2))
+    story.append(Paragraph("2. What the cardholder had to accept to place this "
+                           "order", h2))
+    accepted = ""
+    for pack in packs:
+        for order in (pack.get("orders") or {}).get("orders", []):
+            accepted = accepted or acceptance_for(order.get("bought_on", ""))
+    if accepted:
+        story.append(Paragraph(
+            "The order was placed on the merchant's checkout page shown above. "
+            "That page carries a checkbox the cardholder must tick before the "
+            "Complete Order button becomes active; the order could not have "
+            "been submitted without it. The checkbox reads:", body))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(f"<b>&ldquo;{esc(accepted)}&rdquo;</b>", body))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            "A screen capture of that checkout, showing the unticked box and "
+            "the disabled Complete Order button, accompanies this document.",
+            small))
+    story.append(Spacer(1, 6))
     story.append(Paragraph(
-        "The following terms were published at the URLs shown and in force on "
-        "the purchase date. Purchase is the act of acceptance under the "
-        "merchant's published terms.", body))
+        "The terms linked from that checkbox were published at the URLs shown "
+        "and in force on the purchase date.", body))
     for title, url, text in POLICY_LINES:
         story.append(Spacer(1, 4))
         story.append(Paragraph(f"<b>{esc(title)}</b> — {esc(url)}", small))
