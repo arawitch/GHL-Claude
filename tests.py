@@ -587,6 +587,72 @@ def test_shipped_lookup_table_covers_the_live_campaigns():
           len(table["ads"]) >= 20, str(len(table["ads"])))
 
 
+def test_spreads_bot_section_only_when_an_account_is_found():
+    import json, os, tempfile
+    from ghl import spreads_bot, spreads_usage
+    found = {"version": "a1720-4", "status": "found", "matched_on": "email", "query": {"email": "j@x.com"},
+             "account": {"user_id": 7, "email": "j@x.com", "name": "Jane", "created_at": "2026-09-01T14:00:00+00:00",
+                         "last_login": "", "last_login_ip": "", "live_approved_at": "", "broker": "tradier",
+                         "broker_connected_at": ""},
+             "ip_events": [{"at": "2026-09-10T14:59:00+00:00", "ip": "203.0.113.7", "user_agent": "M",
+                            "event": "Accepted the Live Trading Authorization", "detail": "", "source": "x"}],
+             "ip_usage": [], "sessions": {}, "visits": [], "history_since": "", "settings_dates": [],
+             "settings_changes": [], "trades": {"count": 2, "contracts": 2, "trading_days": 2, "first": "2026-09-03",
+             "last": "2026-09-04", "by_kind": {"Spreads Bot (placed at broker)": 2},
+             "by_month": [{"month": "2026-09", "Spreads Bot (placed at broker)": 2}], "dates": []},
+             "activity": {"last_activity": "2026-09-04"}, "limits": []}
+    packs = [{"submissions": [{"ip": "203.0.113.7"}, {"ip": ""}]}]
+    pasted = "noise\n" + spreads_usage.JSON_BEGIN + "\n" + json.dumps(found) + "\n" + spreads_usage.JSON_END
+    r = spreads_bot.from_paste(pasted)
+    check("a pasted lookup parses", r.get("status") == "found")
+    blocks = spreads_bot.blocks_for_pdf(r, packs)
+    heads = [b["heading"] for b in blocks]
+    check("the IP match block is built from the CRM form IPs",
+          "IP address match: CRM opt-in vs Spreads Bot" in heads and
+          any("203.0.113.7" in str(b["rows"]) for b in blocks if b["heading"].startswith("IP address match")))
+    nf = dict(found, status="not_found", account={})
+    check("no account: nothing goes in the pack", spreads_bot.blocks_for_pdf(nf, packs) == [])
+    check("an error: nothing goes in the pack",
+          spreads_bot.blocks_for_pdf(spreads_bot.from_paste("not json"), packs) == [])
+    check("the closer is told why", spreads_bot.page_line(nf).startswith("Spreads Bot: not added."))
+    saved = {k: os.environ.pop(k, None) for k in (spreads_bot.URL_VAR, spreads_bot.TOKEN_VAR)}
+    try:
+        check("not configured: no fetch", spreads_bot.fetch("j@x.com") is None)
+        os.environ[spreads_bot.URL_VAR] = "https://example.invalid/api/proof-of-use"
+        os.environ[spreads_bot.TOKEN_VAR] = "t" * 40
+        seen = {}
+
+        class _R:
+            status_code, text = 200, json.dumps(found)
+
+        def _get(url, params=None, headers=None, timeout=None):
+            seen.update(url=url, params=params, headers=headers)
+            return _R()
+        got = spreads_bot.fetch("j@x.com", session=types.SimpleNamespace(get=_get))
+        check("fetch sends the email and the bearer token",
+              got.get("status") == "found" and seen["params"]["email"] == "j@x.com"
+              and seen["headers"]["Authorization"] == "Bearer " + "t" * 40 and seen["params"].get("logs") == "1")
+        class _R404:
+            status_code, text = 404, "Not Found"
+        bad = spreads_bot.fetch("j@x.com", session=types.SimpleNamespace(get=lambda *a, **k: _R404()))
+        check("a refused fetch is an error, not a section", bad.get("status") == "error"
+              and spreads_bot.blocks_for_pdf(bad, packs) == [])
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    try:
+        import reportlab  # noqa: F401
+    except ImportError:
+        print("  skip  PDF render (reportlab not installed)")
+        return
+    from ghl import dispute
+    out = os.path.join(tempfile.mkdtemp(), "t.pdf")
+    dispute.render_pdf([], out, spreads_blocks=blocks)
+    check("the PDF renders with the section", os.path.getsize(out) > 1000)
+
+
 def main() -> int:
     for fn in [test_id_based_attribution_decodes_to_names,
                test_name_based_attribution_is_left_alone,
@@ -613,7 +679,8 @@ def main() -> int:
                test_contradictory_state_tags_are_cleared,
                test_owners_are_recorded_but_not_prospected,
                test_missing_registrants_are_created_only_when_asked,
-               test_two_registrations_on_one_record_merge_rather_than_fight]:
+               test_two_registrations_on_one_record_merge_rather_than_fight,
+               test_spreads_bot_section_only_when_an_account_is_found]:
         fn()
     print()
     if FAILURES:

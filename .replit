@@ -1,0 +1,23 @@
+# Replit runs the dispute evidence page. Everything it needs lives in Secrets:
+# DISPUTE_PASSWORD, FLASK_SECRET_KEY, GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID,
+# GHL_EMAIL_API_KEY, GHL_EMAIL_LOCATION_ID, and optionally SPREADS_BOT_LOOKUP_URL and
+# SPREADS_BOT_LOOKUP_TOKEN for the Spreads Bot proof-of-use section.
+#
+# The dependencies go in a virtual environment rather than the Nix python,
+# whose site-packages does not survive between shell commands. PIP_USER is set
+# to 1 in the Repl's environment and a venv refuses a --user install, so it is
+# turned off for the install.
+run = "test -d .venv || python3 -m venv .venv; PIP_USER=0 .venv/bin/pip install -q -r webapp/requirements.txt && .venv/bin/python webapp/app.py"
+entrypoint = "webapp/app.py"
+modules = ["python-3.11"]
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["sh", "-c", "test -d .venv || python3 -m venv .venv; PIP_USER=0 .venv/bin/pip install -q -r webapp/requirements.txt && .venv/bin/python webapp/app.py"]
+deploymentTarget = "cloudrun"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
