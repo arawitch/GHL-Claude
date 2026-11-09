@@ -508,7 +508,8 @@ def transaction_summary(packs: list[dict]) -> dict:
 
 
 def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None,
-               exhibit: str = "", acceptance: str = "") -> str:
+               exhibit: str = "", acceptance: str = "",
+               spreads_blocks: list[dict] | None = None) -> str:
     """Write the evidence pack as a single PDF at `path`."""
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT
@@ -702,6 +703,17 @@ def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None,
                 "charge id are missing from this pack. Add the payments read "
                 "scopes to the private integration token and build the pack "
                 "again. The refusal was: " + esc(orders_info["reason"]), small))
+        story.append(PageBreak())
+
+    if spreads_blocks:
+        # Proof of use from the Spreads Bot server (ghl/spreads_bot.py decides whether it goes in).
+        for i, b in enumerate(spreads_blocks):
+            story.append(Paragraph(esc(b["heading"]), h1 if i == 0 else h2))
+            if b.get("note"):
+                story.append(Paragraph(esc(b["note"]), body if i == 0 else small))
+            if b.get("rows"):
+                story.append(Spacer(1, 4))
+                story.append(table([[str(c) for c in r] for r in b["rows"]], b["widths"]))
         story.append(PageBreak())
 
     if not found:

@@ -820,7 +820,13 @@ def cmd_dispute(client: GHLClient, args) -> int:
     for pack in packs:
         for order in (pack.get("orders") or {}).get("orders", []):
             exhibit = exhibit or dispute.exhibit_for(order.get("bought_on", ""))
-    dispute.render_pdf(packs, str(out), order_facts or None, exhibit=exhibit)
+    from ghl import spreads_bot
+    spreads = (spreads_bot.from_paste(Path(args.spreads_json).read_text())
+               if args.spreads_json else spreads_bot.fetch(args.email or "", ""))
+    if spreads is not None:
+        print(spreads_bot.page_line(spreads), file=sys.stderr)
+    dispute.render_pdf(packs, str(out), order_facts or None, exhibit=exhibit,
+                       spreads_blocks=spreads_bot.blocks_for_pdf(spreads, packs))
     print(f"wrote {out}")
     return 0 if any(p.get("found") for p in packs) else 1
 
@@ -986,6 +992,9 @@ def main() -> int:
     p.add_argument("--order", action="append", metavar="KEY=VALUE",
                    help="a transaction fact from Stripe, e.g. --order 'Charge id=ch_123' "
                         "(repeat for each)")
+    p.add_argument("--spreads-json", metavar="FILE",
+                   help="the Spreads Bot proof-of-use lookup output, saved to a file; without "
+                        "it the lookup link in SPREADS_BOT_LOOKUP_URL/TOKEN is used if set")
     p.set_defaults(func=cmd_dispute, needs_main_client=False)
 
     p = sub.add_parser("count"); add_filter_args(p); p.set_defaults(func=cmd_count)
