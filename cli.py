@@ -816,7 +816,11 @@ def cmd_dispute(client: GHLClient, args) -> int:
     if args.json:
         Path(args.json).write_text(json.dumps(packs, indent=1))
         print(f"wrote {args.json}")
-    dispute.render_pdf(packs, str(out), order_facts or None)
+    exhibit = ""
+    for pack in packs:
+        for order in (pack.get("orders") or {}).get("orders", []):
+            exhibit = exhibit or dispute.exhibit_for(order.get("bought_on", ""))
+    dispute.render_pdf(packs, str(out), order_facts or None, exhibit=exhibit)
     print(f"wrote {out}")
     return 0 if any(p.get("found") for p in packs) else 1
 
