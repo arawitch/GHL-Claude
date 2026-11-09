@@ -1,0 +1,17 @@
+# Replit runs the dispute evidence page. Everything it needs lives in Secrets:
+# DISPUTE_PASSWORD, FLASK_SECRET_KEY, GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID,
+# GHL_EMAIL_API_KEY, GHL_EMAIL_LOCATION_ID.
+run = "pip install -q -r webapp/requirements.txt && python3 webapp/app.py"
+entrypoint = "webapp/app.py"
+modules = ["python-3.11"]
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["sh", "-c", "pip install -q -r webapp/requirements.txt && python3 webapp/app.py"]
+deploymentTarget = "cloudrun"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
