@@ -508,7 +508,7 @@ def transaction_summary(packs: list[dict]) -> dict:
 
 
 def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None,
-               exhibit: str = "") -> str:
+               exhibit: str = "", acceptance: str = "") -> str:
     """Write the evidence pack as a single PDF at `path`."""
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT
@@ -563,10 +563,10 @@ def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None,
 
     story.append(Paragraph("2. What the cardholder had to accept to place this "
                            "order", h2))
-    accepted = ""
+    accepted = acceptance
     for pack in packs:
         for order in (pack.get("orders") or {}).get("orders", []):
-            accepted = accepted or acceptance_for(order.get("bought_on", ""))
+            accepted = acceptance_for(order.get("bought_on", "")) or accepted
     if accepted:
         story.append(Paragraph(
             "The order was placed on the merchant's checkout page shown above. "

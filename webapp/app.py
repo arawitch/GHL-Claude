@@ -192,12 +192,25 @@ def search():
             f"<input type=hidden name=email value='{esc(row['email'])}'>"
             f"<input type=hidden name=phone value='{esc(row['phone'])}'>"
             f"<input type=hidden name=name value='{esc(row['name'])}'>"
+            f"<select name=checkout>{checkout_options()}</select> "
             "<button type=submit>Build pack</button></form></div>")
     parts.append("<p class=note><a href='/'>New search</a></p>")
     return page("".join(parts))
 
 
-def build_job(job_id: str, email: str, phone: str, name: str) -> None:
+def checkout_options() -> str:
+    """The checkout pages, so a pack can carry the right exhibit even when the
+    order record is unreadable and the page cannot be detected."""
+    out = ["<option value=''>Checkout: detect from the order</option>"]
+    for path in dispute.CHECKOUT_ACCEPTANCE:
+        if path != path.lower():          # the /PRESALE duplicate
+            continue
+        out.append(f"<option value='{esc(path)}'>{esc(path)}</option>")
+    return "".join(out)
+
+
+def build_job(job_id: str, email: str, phone: str, name: str,
+              checkout: str = "") -> None:
     try:
         packs = [dispute.gather(client, email=email, phone=phone, label=label,
                                 pages=6)
@@ -207,10 +220,19 @@ def build_job(job_id: str, email: str, phone: str, name: str) -> None:
         for pack in packs:
             for order in (pack.get("orders") or {}).get("orders", []):
                 exhibit = exhibit or dispute.exhibit_for(order.get("bought_on", ""))
+        if not exhibit and checkout:
+            exhibit = dispute.exhibit_for(
+                "https://go.universityofoptions.com" + checkout)
+        if checkout and not any(
+                (p.get("orders") or {}).get("orders") for p in packs):
+            facts.setdefault("Checkout page (selected)",
+                             "https://go.universityofoptions.com" + checkout)
         slug = "".join(ch if ch.isalnum() else "-" for ch in (name or email or "buyer"))
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         out = OUT_DIR / f"{slug.strip('-').lower()}-{stamp}-{job_id[:6]}.pdf"
-        dispute.render_pdf(packs, str(out), facts or None, exhibit=exhibit)
+        accepted = dispute.CHECKOUT_ACCEPTANCE.get(checkout, "") if checkout else ""
+        dispute.render_pdf(packs, str(out), facts or None, exhibit=exhibit,
+                           acceptance=accepted)
         with JOBS_LOCK:
             JOBS[job_id].update(state="done", path=str(out),
                                 found=any(p.get("found") for p in packs))
@@ -231,7 +253,11 @@ def build():
     job_id = secrets.token_urlsafe(12)
     with JOBS_LOCK:
         JOBS[job_id] = {"state": "running", "name": name, "started": time.time()}
-    threading.Thread(target=build_job, args=(job_id, email, phone, name),
+    checkout = (request.form.get("checkout") or "").strip()
+    if checkout and checkout not in dispute.CHECKOUT_ACCEPTANCE:
+        checkout = ""
+    threading.Thread(target=build_job,
+                     args=(job_id, email, phone, name, checkout),
                      daemon=True).start()
     return redirect(url_for("status_page", job_id=job_id))
 
