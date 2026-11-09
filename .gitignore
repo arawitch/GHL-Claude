@@ -1,20 +1,3 @@
-# Never commit credentials
-.env
-*.pit
-*token*
-
-# Exported lead lists contain personal data — keep them out of git
-lists/
-*.csv
-
+.venv/
 __pycache__/
 *.pyc
-.venv/
-week1-preview/
-paste-sheet.html
-replay-paste-sheet.html
-replay-preview/
-replay-emails.pdf
-followup-sheet.html
-followup-preview/
-replay-click-followup.pdf
