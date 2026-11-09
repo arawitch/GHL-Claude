@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .client import GHLClient, GHLError
@@ -214,15 +216,28 @@ def conversation_activity(client: GHLClient, contact_id: str) -> dict:
 def orders(client: GHLClient, contact_id: str) -> dict:
     """GHL Payments orders and card transactions for the contact.
 
-    The main/EMAIL token carries the orders and transactions read scopes; the
-    SMS token does not, so this returns the refusal rather than raising and the
-    pack records which account could be read.
+    These endpoints need the payments read scopes on the private integration
+    token. The main/EMAIL token has carried them, but GoHighLevel has also
+    refused them on that same token, so this returns the refusal rather than
+    raising and the pack records which account could be read.
     """
     out: dict[str, Any] = {"available": False, "orders": [], "transactions": []}
+    res = None
+    # GoHighLevel sometimes answers a scope 401 on a token that read the same
+    # endpoint minutes earlier, so one refusal is not proof the scope is gone.
+    for attempt in range(3):
+        try:
+            res = client.get("/payments/orders", altId=client.location_id,
+                             altType="location", contactId=contact_id, limit=20)
+            break
+        except GHLError as exc:
+            out["reason"] = str(exc)[:300]
+            if attempt == 2:
+                return out
+            time.sleep(2 * (attempt + 1))
     try:
-        res = client.get("/payments/orders", altId=client.location_id,
-                         altType="location", contactId=contact_id, limit=20)
         out["available"] = True
+        out.pop("reason", None)
         for row in res.get("data", []) or []:
             detail = {}
             try:
@@ -388,6 +403,43 @@ CHECKOUT_ACCEPTANCE = {
 }
 
 
+EXHIBIT_DIR = Path(__file__).resolve().parent.parent / "assets" / "checkout-exhibits"
+
+
+def exhibit_for(page_url: str) -> str:
+    """Path to the screen capture of the checkout the order was placed on."""
+    for path in CHECKOUT_ACCEPTANCE:
+        if page_url and page_url.rstrip("/").lower().endswith(path.lower()):
+            slug = path.lower().replace("/", "-")
+            candidate = EXHIBIT_DIR / f"checkout{slug}.png"
+            if candidate.exists():
+                return str(candidate)
+    return ""
+
+
+def search(client: GHLClient, query: str, limit: int = 10) -> list[dict]:
+    """Free-text contact search: a name, part of a name, an email or a phone."""
+    try:
+        res = client.post("/contacts/search", {
+            "locationId": client.location_id,
+            "pageLimit": limit,
+            "query": query.strip(),
+        })
+    except GHLError:
+        return []
+    out = []
+    for row in res.get("contacts", []):
+        out.append({
+            "id": row.get("id", ""),
+            "name": " ".join(x for x in [row.get("firstName"), row.get("lastName")] if x),
+            "email": row.get("email", ""),
+            "phone": row.get("phone", ""),
+            "created": _iso(row.get("dateAdded")),
+            "tags": (row.get("tags") or [])[:6],
+        })
+    return out
+
+
 def acceptance_for(page_url: str) -> str:
     """The checkbox text the buyer had to tick on the page they bought from."""
     for path, text in CHECKOUT_ACCEPTANCE.items():
@@ -455,15 +507,16 @@ def transaction_summary(packs: list[dict]) -> dict:
     return facts
 
 
-def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None) -> str:
+def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None,
+               exhibit: str = "") -> str:
     """Write the evidence pack as a single PDF at `path`."""
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
-    from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
-                                    Spacer, Table, TableStyle)
+    from reportlab.platypus import (Image, PageBreak, Paragraph,
+                                    SimpleDocTemplate, Spacer, Table, TableStyle)
 
     base = getSampleStyleSheet()
     h1 = ParagraphStyle("h1", parent=base["Heading1"], fontSize=15, spaceAfter=8)
@@ -642,15 +695,34 @@ def render_pdf(packs: list[dict], path: str, order_facts: dict | None = None) ->
                   t["transaction_id"]] for t in orders_info["transactions"]],
                 [1.3, 1.0, 0.9, 1.7, 1.6]))
         if not orders_info.get("available") and orders_info.get("reason"):
+            story.append(Paragraph("Order record", h2))
             story.append(Paragraph(
-                "Order records were not readable from this account: "
-                + esc(orders_info["reason"]), small))
+                "GoHighLevel refused the order and transaction read for this "
+                "account, so the order amount, the card and the processor's "
+                "charge id are missing from this pack. Add the payments read "
+                "scopes to the private integration token and build the pack "
+                "again. The refusal was: " + esc(orders_info["reason"]), small))
         story.append(PageBreak())
 
     if not found:
         story.append(Paragraph(
             "No CRM record matched the email address or phone number supplied. "
             "Check the spelling, and try the phone number in E.164 form.", body))
+
+    if exhibit:
+        try:
+            from reportlab.lib.utils import ImageReader
+            width, height = ImageReader(exhibit).getSize()
+            max_w, max_h = 7.1 * inch, 8.4 * inch
+            scale = min(max_w / width, max_h / height)
+            story.append(Paragraph("Exhibit: the checkout as the cardholder saw it", h2))
+            story.append(Paragraph(
+                "Captured from the live page. The Complete Order button is "
+                "greyed out until the agreement box is ticked.", small))
+            story.append(Spacer(1, 6))
+            story.append(Image(exhibit, width * scale, height * scale))
+        except Exception:
+            pass
 
     doc = SimpleDocTemplate(path, pagesize=LETTER,
                             leftMargin=0.7 * inch, rightMargin=0.7 * inch,
