@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import sys
 from pathlib import Path
@@ -778,6 +779,48 @@ def cmd_export(client: GHLClient, args) -> None:
     print(f"wrote {written:,} row(s) to {args.out}")
 
 
+def cmd_dispute(client: GHLClient, args) -> int:
+    """Assemble one buyer's evidence pack across both sub-accounts."""
+    from ghl import dispute
+
+    accounts = []
+    for label, token_var, loc_var in (
+            ("SMS", "GHL_SMS_API_KEY", "GHL_SMS_LOCATION_ID"),
+            ("main/EMAIL", "GHL_EMAIL_API_KEY", "GHL_EMAIL_LOCATION_ID")):
+        token, loc = os.environ.get(token_var), os.environ.get(loc_var)
+        if token and loc:
+            accounts.append((label, GHLClient(token=token, location_id=loc)))
+    if not accounts:
+        print("set GHL_SMS_API_KEY/GHL_SMS_LOCATION_ID and/or "
+              "GHL_EMAIL_API_KEY/GHL_EMAIL_LOCATION_ID", file=sys.stderr)
+        return 1
+
+    packs = []
+    for label, acct in accounts:
+        print(f"reading {label} ...", file=sys.stderr)
+        pack = dispute.gather(acct, email=args.email or "", phone=args.phone or "",
+                              label=label, pages=args.pages,
+                              start_at=args.since or "", end_at=args.until or "")
+        if not pack.get("found"):
+            print(f"  no contact matched in {label}", file=sys.stderr)
+        packs.append(pack)
+
+    order_facts = dispute.transaction_summary(packs)
+    for pair in args.order or []:
+        key, _, value = pair.partition("=")
+        if value:
+            order_facts[key.strip()] = value.strip()
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if args.json:
+        Path(args.json).write_text(json.dumps(packs, indent=1))
+        print(f"wrote {args.json}")
+    dispute.render_pdf(packs, str(out), order_facts or None)
+    print(f"wrote {out}")
+    return 0 if any(p.get("found") for p in packs) else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -922,6 +965,24 @@ def main() -> int:
     p.add_argument("--no-notes", action="store_true", help="skip the contact note")
     p.add_argument("--no-fields", action="store_true", help="skip the custom fields")
     p.set_defaults(func=cmd_ad_attribution, needs_main_client=False)
+
+    p = sub.add_parser("dispute-evidence",
+                       help="build a chargeback evidence pack PDF for one buyer")
+    p.add_argument("--email", help="the buyer's email address")
+    p.add_argument("--phone", help="the buyer's phone in E.164, e.g. +14155550123")
+    p.add_argument("--out", default="dispute-evidence.pdf", help="PDF to write")
+    p.add_argument("--json", help="also write the raw collected data here")
+    p.add_argument("--pages", type=int, default=20,
+                   help="how many pages of form submissions to walk back (100 per page)")
+    p.add_argument("--since", help="only look for form submissions on or after this "
+                                   "ISO date -- use a window around the purchase date "
+                                   "for an older buyer")
+    p.add_argument("--until", help="only look for form submissions on or before this "
+                                   "ISO date")
+    p.add_argument("--order", action="append", metavar="KEY=VALUE",
+                   help="a transaction fact from Stripe, e.g. --order 'Charge id=ch_123' "
+                        "(repeat for each)")
+    p.set_defaults(func=cmd_dispute, needs_main_client=False)
 
     p = sub.add_parser("count"); add_filter_args(p); p.set_defaults(func=cmd_count)
 
