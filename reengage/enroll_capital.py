@@ -17,6 +17,11 @@ flagged as owners in the main/EMAIL account with no such tag in SMS. The
 workflow's own guard can only see SMS tags, so the cross-account check has to
 happen here, at enrolment, matched on lowercased email.
 
+Every contact is also screened live against `active_sales_screen`: anyone
+with a booked call or a two-way SMS exchange in the last 14 days belongs to
+the rep, not the bot, and is skipped with the reason recorded in the log.
+Added after the 11 Nov run enrolled a lead Joel was mid-close on.
+
 Usage:  python3 reengage/enroll_capital.py <count> [--go]
 Needs:  GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID,
         GHL_EMAIL_API_KEY, GHL_EMAIL_LOCATION_ID
@@ -25,6 +30,7 @@ import sys, os, csv, json, time, pathlib, datetime
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from ghl.client import GHLClient
+from reengage import active_sales_screen
 
 TAG = 'ai qualifying v2'
 LIST = '/mnt/project-files/reengagement/capital-5k-plus-clean-2026-11-04.csv'
@@ -85,6 +91,21 @@ def excluded_emails_in_email_account():
     return out
 
 
+def sms_messages(cl, contact_id):
+    """Every SMS message on the contact's conversations, newest page only.
+
+    One page of 100 per conversation is plenty: the screen only looks back
+    14 days, and anything older cannot change the answer.
+    """
+    out = []
+    for cv in cl.get('/conversations/search',
+                     contactId=contact_id).get('conversations', []) or []:
+        box = cl.request('GET', '/conversations/%s/messages' % cv['id'],
+                         params={'limit': 100}).get('messages', {})
+        out.extend(box.get('messages', []) or [])
+    return out
+
+
 def main():
     want = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 0
     go = '--go' in sys.argv
@@ -104,8 +125,8 @@ def main():
     print('exclusion tags in the main account cover %d emails' % len(other))
 
     stats = {'tagged': 0, 'already': 0, 'excluded': 0, 'excl_other': 0,
-             'dnd': 0, 'nophone': 0, 'missing': 0, 'error': 0}
-    done, i = [], start
+             'dnd': 0, 'nophone': 0, 'rep_working': 0, 'missing': 0, 'error': 0}
+    done, skipped, i = [], [], start
     while i < len(rows) and stats['tagged'] < want:
         r = rows[i]
         i += 1
@@ -137,6 +158,19 @@ def main():
         if c.get('dnd') or sms.get('status') in ('permanent', 'active'):
             stats['dnd'] += 1
             continue
+        # Last gate before the tag: is a rep already working this person?
+        # Live read of the conversation, never the CSV - a deal can open the
+        # morning of the run.
+        try:
+            reason = active_sales_screen.is_rep_working_them(
+                c, sms_messages(cl, cid))
+        except Exception:
+            # A conversation we cannot read is not a licence to text over it.
+            reason = 'could not read the conversation'
+        if reason:
+            stats['rep_working'] += 1
+            skipped.append((cid, c.get('email'), r['capital_band'], reason))
+            continue
         if not go:
             stats['tagged'] += 1
             done.append((cid, c.get('email'), r['capital_band']))
@@ -151,7 +185,7 @@ def main():
 
     print('read rows %d..%d of %d' % (start, i, len(rows)))
     for k in ('tagged', 'already', 'excluded', 'excl_other', 'dnd', 'nophone',
-              'missing', 'error'):
+              'rep_working', 'missing', 'error'):
         print('  %-9s %d' % (k, stats[k]))
 
     if not go:
@@ -164,10 +198,13 @@ def main():
     with open(LOG, 'a', newline='') as f:
         w = csv.writer(f)
         if new:
-            w.writerow(['enrolled_at', 'sms_contact_id', 'email', 'capital_band'])
+            w.writerow(['enrolled_at', 'sms_contact_id', 'email',
+                        'capital_band', 'skip_reason'])
         stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
         for cid, email, band in done:
-            w.writerow([stamp, cid, email, band])
+            w.writerow([stamp, cid, email, band, ''])
+        for cid, email, band, reason in skipped:
+            w.writerow([stamp, cid, email, band, 'SKIPPED: ' + reason])
     print('cursor now at %d; %d rows left in the list' % (i, len(rows) - i))
 
 
