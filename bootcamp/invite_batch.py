@@ -40,8 +40,12 @@ LOG = '/mnt/project-files/bootcamp/invite-log.csv'
 SUPPRESS = {'do not contact', 'never send', 'ai exclude', 'complainer',
             'ai complaint', 'do not text'}
 
-BURST = 20       # tag this many, then wait
-GAP = 900        # seconds between bursts -> ~80/hour, ~640 over an 8h window
+# The real throttle is now the workflow's own Drip action (15 contacts every
+# 15 minutes, gated by the 11am-7pm Eastern time window), added 2026-11-19.
+# These only keep the tagging from dumping the whole list into the queue at
+# once; override with INVITE_BURST / INVITE_GAP.
+BURST = int(os.environ.get('INVITE_BURST', 20))
+GAP = int(os.environ.get('INVITE_GAP', 300))
 
 
 def messages_for(cl, contact_id):
