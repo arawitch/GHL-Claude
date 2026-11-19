@@ -13,7 +13,7 @@ Needs:  GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID
 import os, sys, json, collections, datetime, pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from ghl.client import GHLClient
+from ghl.client import GHLClient, GHLError
 
 OPENER = 'are you still trading'
 TAG = 'ai qualifying v2'
@@ -54,8 +54,16 @@ def fetch_messages(conv_id, cap=600):
         params = {'limit': 100}
         if last:
             params['lastMessageId'] = last
-        box = cl.request('GET', '/conversations/%s/messages' % conv_id,
-                         params=params).get('messages', {})
+        try:
+            box = cl.request('GET', '/conversations/%s/messages' % conv_id,
+                             params=params).get('messages', {})
+        except GHLError as e:
+            # Conversation search sometimes lists a conversation that has since
+            # been deleted; GHL then answers 400 CONVERSATION_NOT_FOUND. Skip it
+            # rather than losing the whole run.
+            if 'CONVERSATION_NOT_FOUND' in str(e):
+                break
+            raise
         batch = box.get('messages', []) or []
         out += batch
         if not box.get('nextPage') or not batch:
