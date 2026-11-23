@@ -153,12 +153,6 @@
     <div class="tw" id="cfunnel"></div>
   </section>
 
-  <section class="panel" id="cwarmpanel" hidden>
-    <h2>Bootcamp warm-up</h2>
-    <p class="ph" id="cwarmph">Only the people carrying the bootcamp registration tag, because the course tags are shared with the 29,000-person email re-engagement waves and a bare count cannot tell the two apart. Registrants are deduped across both GoHighLevel sub-accounts and their tags merged, since the course app writes to whichever account answers for the id in the link.</p>
-    <div class="tw" id="cwarm"></div>
-  </section>
-
   <section class="panel">
     <h2>Raw course activity</h2>
     <p class="ph">Straight from the course app’s own report, which counts every visit including people it cannot identify, so these totals run ahead of the tagged numbers above. Anonymous visitors appear here and nowhere else.</p>
@@ -201,6 +195,12 @@
     <h2>Registrations and engagement</h2>
     <p class="ph" id="bph">Every tag in the GoHighLevel SMS account whose name starts with &ldquo;bootcamp&rdquo;, counted as it stands. That means the rows appear by themselves as the new funnel starts writing tags, and it also means the tags left over from the previous bootcamp are in here — anything with a count today is history, not the Nov 30 event. The new registration tag is <code>bootcamp registered</code>.</p>
     <div class="tw" id="bfunnel"></div>
+  </section>
+
+  <section class="panel" id="cwarmpanel" hidden>
+    <h2>Free course sent as warm-up</h2>
+    <p class="ph" id="cwarmph">How far the registered list has got into the free Credit Spreads course. Counted only for people carrying the bootcamp registration tag, because the course tags are shared with the 29,000-person email re-engagement waves and a bare count cannot tell the two apart. Registrants are deduped across both GoHighLevel sub-accounts and their tags merged, since the course app tags whichever account answers for the id in the link.</p>
+    <div class="tw" id="cwarm"></div>
   </section>
 
   <section class="panel">
@@ -578,8 +578,6 @@
       }),
       'No course tags on anyone yet.');
 
-    drawWarmup();
-
     simpleTable(el.cevents, ['Event', 'Total'],
       EVENTS.filter(function (e) { return e[0] in ev; })
             .map(function (e) { return [e[1], ev[e[0]]]; }),
@@ -598,8 +596,13 @@
     if (el.cwarmpanel) el.cwarmpanel.hidden = false;
     var reg = w.registered;
     var rows = [['Registered for the bootcamp', reg, ''],
-                ['Touched the course at all', n(w.any_course_activity),
-                 pct(w.any_course_activity, reg) + ' of registrants'],
+                ['Clicked through to the course', n(w.clicked_through),
+                 pct(w.clicked_through, reg) + ' of registrants'],
+                ['Opened a lesson', n(w.opened_a_lesson),
+                 n(w.clicked_through) ? pct(w.opened_a_lesson, w.clicked_through) + ' of clickers' : ''],
+                ['Clicked but started nothing',
+                 Math.max(0, n(w.clicked_through) - n(w.opened_a_lesson)),
+                 'landed on the page and stopped'],
                 ['Not touched it yet', n(w.no_course_activity),
                  pct(w.no_course_activity, reg) + ' — the follow-up list']];
     (w.funnel || []).forEach(function (r) {
@@ -658,6 +661,7 @@
 
   // ---- Bootcamp ---------------------------------------------------------
   function drawBootcamp() {
+    drawWarmup();
     if (!bootcamp) {
       tileRow(el.btiles, []);
       simpleTable(el.bfunnel, [], [], 'Nothing to count yet — the bootcamp funnel has not been built.');
@@ -735,7 +739,7 @@
     }, function () {});
     db.doc('course/status').onSnapshot(function (snap) {
       course = snap.exists ? snap.data() : null;
-      drawCourse(); drawStamp();
+      drawCourse(); drawWarmup(); drawStamp();
     }, function () {});
     db.doc('juan/status').onSnapshot(function (snap) {
       juan = snap.exists ? snap.data() : null;

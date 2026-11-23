@@ -18,7 +18,7 @@ Needs:  GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID, and optionally
         COURSE_REPORT_URL (the private report link, key included). Without it
         the report half is left out rather than guessed at.
 """
-import os, sys, json, re, datetime, pathlib, urllib.request
+import os, sys, json, re, csv, io, datetime, pathlib, urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from ghl.client import GHLClient
@@ -125,12 +125,18 @@ def _identity(c):
     return ('p:' + phone) if phone else 'id:' + str(c.get('id'))
 
 
-def warmup_cohort(clients):
+def warmup_cohort(clients, subs=None):
     """Course progress for the people carrying WARMUP_TAG, deduped.
 
-    `clients` is a list of (account_label, GHLClient). Returns None when no
-    account carries the tag at all, so the panel stays off the page until the
-    warm-up actually goes out.
+    `clients` is a list of (account_label, GHLClient). `subs` is the course
+    report's subscriber table keyed by subscriber id, which is the only place
+    a *click* shows up: landing on the course page writes no GoHighLevel tag,
+    so without it someone who opened the link and bounced is indistinguishable
+    from someone who never clicked. A person is matched on any of their
+    contact ids, since the link may carry either account's.
+
+    Returns None when no account carries the tag at all, so the panel stays
+    off the page until the warm-up actually goes out.
     """
     people = {}
     for label, cl in clients:
@@ -142,9 +148,10 @@ def warmup_cohort(clients):
             continue
         for c in found:
             rec = people.setdefault(_identity(c), {'tags': set(), 'accounts': set(),
-                                                   'dnd': False})
+                                                   'ids': set(), 'dnd': False})
             rec['tags'].update(t.lower() for t in (c.get('tags') or []))
             rec['accounts'].add(label)
+            rec['ids'].add(c['id'])
             rec['dnd'] = rec['dnd'] or bool(c.get('dnd'))
     if not people:
         return None
@@ -156,19 +163,55 @@ def warmup_cohort(clients):
              'count': sum(1 for r in people.values() if tag in r['tags'])}
             for key, tag, lab in course_tags]
 
+    subs = subs or {}
+    clicked = opened = 0
+    for r in people.values():
+        rows = [subs[i] for i in r['ids'] if i in subs]
+        if rows:
+            clicked += 1
+            if any(x.get('lessons') for x in rows):
+                opened += 1
     touched = sum(1 for r in people.values()
-                  if any(t.startswith('cs ') for t in r['tags']))
+                  if any(t.startswith('cs ') for t in r['tags'])
+                  or any(i in subs for i in r['ids']))
     unreachable = sum(1 for r in people.values()
                       if r['dnd'] or any(t in r['tags'] for t in EXCLUDE_TAGS))
     return {
         'tag': WARMUP_TAG,
         'registered': len(people),
         'in_both_accounts': sum(1 for r in people.values() if len(r['accounts']) > 1),
+        'clicked_through': clicked,
+        'opened_a_lesson': opened,
         'any_course_activity': touched,
         'no_course_activity': len(people) - touched,
         'excluded_from_sending': unreachable,
         'funnel': rows,
     }
+
+
+def report_subscribers(url):
+    """The report's subscriber table, keyed by subscriber id.
+
+    The HTML report shows the same rows, but the CSV is a stable contract
+    where the HTML is a layout that can be restyled, so the CSV is what the
+    click count is built on. `lessons_opened` is a comma-separated list and
+    is empty for someone who loaded the page and started nothing - which is
+    exactly the state that has no GoHighLevel tag.
+    """
+    sep = '&' if '?' in url else '?'
+    req = urllib.request.Request(url + sep + 'format=csv',
+                                 headers={'User-Agent': 'uoo-dashboard'})
+    text = urllib.request.urlopen(req, timeout=60).read().decode('utf-8', 'replace')
+    out = {}
+    for row in csv.DictReader(io.StringIO(text)):
+        sid = (row.get('subscriber_id') or '').strip()
+        if not sid:
+            continue
+        lessons = [x.strip() for x in (row.get('lessons_opened') or '').split(',')
+                   if x.strip()]
+        out[sid] = {'lessons': lessons,
+                    'last_activity': (row.get('last_activity_utc') or '').strip()}
+    return out
 
 
 def main():
@@ -194,14 +237,20 @@ def main():
     if os.environ.get('GHL_EMAIL_API_KEY') and os.environ.get('GHL_EMAIL_LOCATION_ID'):
         clients.append(('email', GHLClient(os.environ['GHL_EMAIL_API_KEY'],
                                           os.environ['GHL_EMAIL_LOCATION_ID'])))
+    url = os.environ.get('COURSE_REPORT_URL')
+    subs = {}
+    if url:
+        try:
+            subs = report_subscribers(url)
+        except Exception as e:
+            print('subscriber csv failed: %s' % e, file=sys.stderr)
     try:
-        warm = warmup_cohort(clients)
+        warm = warmup_cohort(clients, subs)
         if warm:
             doc['warmup'] = warm
     except Exception as e:
         print('warmup cohort failed: %s' % e, file=sys.stderr)
 
-    url = os.environ.get('COURSE_REPORT_URL')
     if url:
         try:
             doc['report'] = report_numbers(url)
