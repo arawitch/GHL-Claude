@@ -18,7 +18,7 @@ Needs:  GHL_SMS_API_KEY, GHL_SMS_LOCATION_ID, and optionally
         COURSE_REPORT_URL (the private report link, key included). Without it
         the report half is left out rather than guessed at.
 """
-import os, sys, json, re, datetime, pathlib, urllib.request
+import os, sys, json, re, csv, io, datetime, pathlib, urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from ghl.client import GHLClient
@@ -90,6 +90,130 @@ def report_numbers(url):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Bootcamp warm-up cohort
+#
+# The free course is being sent to bootcamp registrants as pre-work, and the
+# `cs ...` tags are shared with the 29,000-person email re-engagement waves, so
+# a bare tag count cannot answer "are the registrants watching it". The answer
+# is the intersection: `bootcamp registered` AND each course tag.
+#
+# Two complications, both handled here rather than in the page:
+#   * 94.8% of contacts exist in BOTH sub-accounts, so counting each account
+#     and adding would roughly double the cohort. The two lists are pulled in
+#     full and deduped on email, falling back to phone.
+#   * the course app writes its tag to whichever account answers for the id in
+#     the link, so one person's registration tag and course tags can sit on
+#     different records. Tags are unioned per person before counting.
+# The cohort is small (low hundreds), so this is two paged searches, not a
+# per-contact walk.
+WARMUP_TAG = 'bootcamp registered'
+EXCLUDE_TAGS = ('do not contact', 'do not email', 'never send')
+
+
+def _norm_phone(v):
+    d = re.sub(r'\D', '', v or '')
+    return d[-10:] if len(d) >= 10 else ''
+
+
+def _identity(c):
+    """One key per real person, so the two sub-accounts can be merged."""
+    email = (c.get('email') or '').strip().lower()
+    if email:
+        return 'e:' + email
+    phone = _norm_phone(c.get('phone'))
+    return ('p:' + phone) if phone else 'id:' + str(c.get('id'))
+
+
+def warmup_cohort(clients, subs=None):
+    """Course progress for the people carrying WARMUP_TAG, deduped.
+
+    `clients` is a list of (account_label, GHLClient). `subs` is the course
+    report's subscriber table keyed by subscriber id, which is the only place
+    a *click* shows up: landing on the course page writes no GoHighLevel tag,
+    so without it someone who opened the link and bounced is indistinguishable
+    from someone who never clicked. A person is matched on any of their
+    contact ids, since the link may carry either account's.
+
+    Returns None when no account carries the tag at all, so the panel stays
+    off the page until the warm-up actually goes out.
+    """
+    people = {}
+    for label, cl in clients:
+        try:
+            found = cl.search_contacts(
+                filters=[{'field': 'tags', 'operator': 'eq', 'value': WARMUP_TAG}])
+        except Exception as e:
+            print('warmup: %s account search failed: %s' % (label, e), file=sys.stderr)
+            continue
+        for c in found:
+            rec = people.setdefault(_identity(c), {'tags': set(), 'accounts': set(),
+                                                   'ids': set(), 'dnd': False})
+            rec['tags'].update(t.lower() for t in (c.get('tags') or []))
+            rec['accounts'].add(label)
+            rec['ids'].add(c['id'])
+            rec['dnd'] = rec['dnd'] or bool(c.get('dnd'))
+    if not people:
+        return None
+
+    course_tags = [(key, tag, lab) for key, tag, lab in FUNNEL
+                   if tag.startswith('cs lesson') or key in
+                   ('guide', 'cheat_sheet', 'offer_click')]
+    rows = [{'key': key, 'tag': tag, 'label': lab,
+             'count': sum(1 for r in people.values() if tag in r['tags'])}
+            for key, tag, lab in course_tags]
+
+    subs = subs or {}
+    clicked = opened = 0
+    for r in people.values():
+        rows = [subs[i] for i in r['ids'] if i in subs]
+        if rows:
+            clicked += 1
+            if any(x.get('lessons') for x in rows):
+                opened += 1
+    touched = sum(1 for r in people.values()
+                  if any(t.startswith('cs ') for t in r['tags'])
+                  or any(i in subs for i in r['ids']))
+    unreachable = sum(1 for r in people.values()
+                      if r['dnd'] or any(t in r['tags'] for t in EXCLUDE_TAGS))
+    return {
+        'tag': WARMUP_TAG,
+        'registered': len(people),
+        'in_both_accounts': sum(1 for r in people.values() if len(r['accounts']) > 1),
+        'clicked_through': clicked,
+        'opened_a_lesson': opened,
+        'any_course_activity': touched,
+        'no_course_activity': len(people) - touched,
+        'excluded_from_sending': unreachable,
+        'funnel': rows,
+    }
+
+
+def report_subscribers(url):
+    """The report's subscriber table, keyed by subscriber id.
+
+    The HTML report shows the same rows, but the CSV is a stable contract
+    where the HTML is a layout that can be restyled, so the CSV is what the
+    click count is built on. `lessons_opened` is a comma-separated list and
+    is empty for someone who loaded the page and started nothing - which is
+    exactly the state that has no GoHighLevel tag.
+    """
+    sep = '&' if '?' in url else '?'
+    req = urllib.request.Request(url + sep + 'format=csv',
+                                 headers={'User-Agent': 'uoo-dashboard'})
+    text = urllib.request.urlopen(req, timeout=60).read().decode('utf-8', 'replace')
+    out = {}
+    for row in csv.DictReader(io.StringIO(text)):
+        sid = (row.get('subscriber_id') or '').strip()
+        if not sid:
+            continue
+        lessons = [x.strip() for x in (row.get('lessons_opened') or '').split(',')
+                   if x.strip()]
+        out[sid] = {'lessons': lessons,
+                    'last_activity': (row.get('last_activity_utc') or '').strip()}
+    return out
+
+
 def main():
     outdir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'dashout')
     cl = GHLClient(os.environ['GHL_SMS_API_KEY'], os.environ['GHL_SMS_LOCATION_ID'])
@@ -109,7 +233,24 @@ def main():
             doc['funnel'].append({'key': key, 'tag': tag, 'label': label,
                                   'count': None})
 
+    clients = [('sms', cl)]
+    if os.environ.get('GHL_EMAIL_API_KEY') and os.environ.get('GHL_EMAIL_LOCATION_ID'):
+        clients.append(('email', GHLClient(os.environ['GHL_EMAIL_API_KEY'],
+                                          os.environ['GHL_EMAIL_LOCATION_ID'])))
     url = os.environ.get('COURSE_REPORT_URL')
+    subs = {}
+    if url:
+        try:
+            subs = report_subscribers(url)
+        except Exception as e:
+            print('subscriber csv failed: %s' % e, file=sys.stderr)
+    try:
+        warm = warmup_cohort(clients, subs)
+        if warm:
+            doc['warmup'] = warm
+    except Exception as e:
+        print('warmup cohort failed: %s' % e, file=sys.stderr)
+
     if url:
         try:
             doc['report'] = report_numbers(url)

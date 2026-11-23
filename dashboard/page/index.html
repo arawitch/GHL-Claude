@@ -197,6 +197,12 @@
     <div class="tw" id="bfunnel"></div>
   </section>
 
+  <section class="panel" id="cwarmpanel" hidden>
+    <h2>Free course sent as warm-up</h2>
+    <p class="ph" id="cwarmph">How far the registered list has got into the free Credit Spreads course. Counted only for people carrying the bootcamp registration tag, because the course tags are shared with the 29,000-person email re-engagement waves and a bare count cannot tell the two apart. Registrants are deduped across both GoHighLevel sub-accounts and their tags merged, since the course app tags whichever account answers for the id in the link.</p>
+    <div class="tw" id="cwarm"></div>
+  </section>
+
   <section class="panel">
     <h2>Attendance by day</h2>
     <p class="ph">One row per bootcamp day once the event runs, showing how many of the registered list showed up and how many stayed to the end.</p>
@@ -239,6 +245,9 @@
     ctiles: document.getElementById('ctiles'),
     cfunnel: document.getElementById('cfunnel'),
     cevents: document.getElementById('cevents'),
+    cwarm: document.getElementById('cwarm'),
+    cwarmph: document.getElementById('cwarmph'),
+    cwarmpanel: document.getElementById('cwarmpanel'),
     cemail: document.getElementById('cemail'),
     cemailph: document.getElementById('cemailph'),
     jtiles: document.getElementById('jtiles'),
@@ -576,6 +585,38 @@
 
   }
 
+  // The warm-up panel stays off the page until the send has actually gone
+  // out, so an empty table never reads as "nobody watched it".
+  function drawWarmup() {
+    var w = course && course.warmup;
+    if (!w || !w.registered) {
+      if (el.cwarmpanel) el.cwarmpanel.hidden = true;
+      return;
+    }
+    if (el.cwarmpanel) el.cwarmpanel.hidden = false;
+    var reg = w.registered;
+    var rows = [['Registered for the bootcamp', reg, ''],
+                ['Clicked through to the course', n(w.clicked_through),
+                 pct(w.clicked_through, reg) + ' of registrants'],
+                ['Opened a lesson', n(w.opened_a_lesson),
+                 n(w.clicked_through) ? pct(w.opened_a_lesson, w.clicked_through) + ' of clickers' : ''],
+                ['Clicked but started nothing',
+                 Math.max(0, n(w.clicked_through) - n(w.opened_a_lesson)),
+                 'landed on the page and stopped'],
+                ['Not touched it yet', n(w.no_course_activity),
+                 pct(w.no_course_activity, reg) + ' — the follow-up list']];
+    (w.funnel || []).forEach(function (r) {
+      rows.push([r.label, typeof r.count === 'number' ? r.count : '—',
+                 typeof r.count === 'number' ? pct(r.count, reg) + ' of registrants' : '']);
+    });
+    if (w.excluded_from_sending) {
+      rows.push(['Cannot be sent to', w.excluded_from_sending,
+                 'DND, do not contact or do not email']);
+    }
+    simpleTable(el.cwarm, ['Registrants', 'People', 'Share'], rows,
+      'No bootcamp registrants yet.');
+  }
+
   // ---- Juan's call lists ------------------------------------------------
   function drawJuan() {
     if (!juan) {
@@ -620,6 +661,7 @@
 
   // ---- Bootcamp ---------------------------------------------------------
   function drawBootcamp() {
+    drawWarmup();
     if (!bootcamp) {
       tileRow(el.btiles, []);
       simpleTable(el.bfunnel, [], [], 'Nothing to count yet — the bootcamp funnel has not been built.');
@@ -697,7 +739,7 @@
     }, function () {});
     db.doc('course/status').onSnapshot(function (snap) {
       course = snap.exists ? snap.data() : null;
-      drawCourse(); drawStamp();
+      drawCourse(); drawWarmup(); drawStamp();
     }, function () {});
     db.doc('juan/status').onSnapshot(function (snap) {
       juan = snap.exists ? snap.data() : null;
