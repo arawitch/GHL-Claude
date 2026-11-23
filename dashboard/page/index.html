@@ -193,8 +193,14 @@
 
   <section class="panel">
     <h2>Registrations and engagement</h2>
-    <p class="ph" id="bph">Every tag in the GoHighLevel SMS account whose name starts with &ldquo;bootcamp&rdquo;, counted as it stands. That means the rows appear by themselves as the new funnel starts writing tags, and it also means the tags left over from the previous bootcamp are in here — anything with a count today is history, not the Nov 30 event. The new registration tag is <code>bootcamp registered</code>.</p>
+    <p class="ph" id="bph">The Nov 30 funnel, one row per tag, counted as people rather than contact records — someone who exists in both GoHighLevel sub-accounts is one person here. Rows appear by themselves as the funnel starts writing new tags. Tags left over from the January bootcamp are kept out of this table and listed separately below.</p>
     <div class="tw" id="bfunnel"></div>
+  </section>
+
+  <section class="panel" id="blegacypanel" hidden>
+    <h2>Left over from the January bootcamp</h2>
+    <p class="ph">These share the &ldquo;bootcamp&rdquo; name but belong to the January 2026 event, so they are counted apart rather than mixed into the funnel above, where they read like a bigger registration number than the real one. Checked against the Nov 30 registrations: they barely overlap at all.</p>
+    <div class="tw" id="blegacy"></div>
   </section>
 
   <section class="panel" id="cwarmpanel" hidden>
@@ -257,6 +263,8 @@
     btiles: document.getElementById('btiles'),
     bfunnel: document.getElementById('bfunnel'),
     bdays: document.getElementById('bdays'),
+    blegacy: document.getElementById('blegacy'),
+    blegacypanel: document.getElementById('blegacypanel'),
     bph: document.getElementById('bph')
   };
   var SUBS = {
@@ -665,12 +673,15 @@
     if (!bootcamp) {
       tileRow(el.btiles, []);
       simpleTable(el.bfunnel, [], [], 'Nothing to count yet — the bootcamp funnel has not been built.');
+      if (el.blegacypanel) el.blegacypanel.hidden = true;
       simpleTable(el.bdays, [], [], 'No bootcamp days yet.');
       return;
     }
     if (bootcamp.note) el.bph.textContent = bootcamp.note;
     var f = bootcamp.funnel || [], reg = 0;
-    f.forEach(function (r) { if (r.key === 'registered') reg = n(r.count); });
+    f.forEach(function (r) {
+      if (String(r.tag || '').toLowerCase() === 'bootcamp registered') reg = n(r.count);
+    });
 
     tileRow(el.btiles, (bootcamp.tiles || []).map(function (c) {
       return [c.label, c.value, c.note || ''];
@@ -679,9 +690,16 @@
     simpleTable(el.bfunnel, ['Step', 'People', 'Of registrations'],
       f.map(function (r) {
         return [r.label, n(r.count),
-                reg && r.key !== 'registered' ? pct(n(r.count), reg) : ''];
+                reg && String(r.tag || '').toLowerCase() !== 'bootcamp registered'
+                  ? pct(n(r.count), reg) : ''];
       }),
       'No bootcamp tags on anyone yet.');
+
+    var leg = bootcamp.legacy || [];
+    if (el.blegacypanel) el.blegacypanel.hidden = !leg.length;
+    simpleTable(el.blegacy, ['Tag', 'People'],
+      leg.map(function (r) { return [r.tag, n(r.count)]; }),
+      'Nothing left over.');
 
     simpleTable(el.bdays, ['Day', 'Attended', 'Stayed to the end', 'Of registrations'],
       (bootcamp.days || []).map(function (r) {
