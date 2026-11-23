@@ -67,14 +67,19 @@ def main():
     for c in cl.search_contacts(filters=filters):
         scanned += 1
         cid = c['id']
-        # The search payload carries custom fields inconsistently, so the
-        # value is read from the contact record itself before deciding.
-        try:
-            full = cl.get('/contacts/%s' % cid).get('contact', {})
-        except Exception as e:
-            print('read %s failed: %s' % (cid, e), file=sys.stderr)
-            failed += 1
-            continue
+        # The search payload already carries customFields, so the usual case
+        # costs no extra request. Only fall back to reading the contact when
+        # the key is missing, which matters at 49k contacts: one read each
+        # would double the run and half the day's API budget.
+        if 'customFields' in c:
+            full = c
+        else:
+            try:
+                full = cl.get('/contacts/%s' % cid).get('contact', {})
+            except Exception as e:
+                print('read %s failed: %s' % (cid, e), file=sys.stderr)
+                failed += 1
+                continue
         if current_value(full, fid) == cid:
             already += 1
             continue
