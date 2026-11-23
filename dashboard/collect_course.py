@@ -22,6 +22,8 @@ import os, sys, json, re, csv, io, datetime, pathlib, urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from ghl.client import GHLClient
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from people import tagged
 
 # Every tag the funnel writes, in the order a person meets them. The label is
 # what the dashboard shows; the tag is what the course app and the DM workflow
@@ -111,20 +113,6 @@ WARMUP_TAG = 'bootcamp registered'
 EXCLUDE_TAGS = ('do not contact', 'do not email', 'never send')
 
 
-def _norm_phone(v):
-    d = re.sub(r'\D', '', v or '')
-    return d[-10:] if len(d) >= 10 else ''
-
-
-def _identity(c):
-    """One key per real person, so the two sub-accounts can be merged."""
-    email = (c.get('email') or '').strip().lower()
-    if email:
-        return 'e:' + email
-    phone = _norm_phone(c.get('phone'))
-    return ('p:' + phone) if phone else 'id:' + str(c.get('id'))
-
-
 def warmup_cohort(clients, subs=None):
     """Course progress for the people carrying WARMUP_TAG, deduped.
 
@@ -138,21 +126,7 @@ def warmup_cohort(clients, subs=None):
     Returns None when no account carries the tag at all, so the panel stays
     off the page until the warm-up actually goes out.
     """
-    people = {}
-    for label, cl in clients:
-        try:
-            found = cl.search_contacts(
-                filters=[{'field': 'tags', 'operator': 'eq', 'value': WARMUP_TAG}])
-        except Exception as e:
-            print('warmup: %s account search failed: %s' % (label, e), file=sys.stderr)
-            continue
-        for c in found:
-            rec = people.setdefault(_identity(c), {'tags': set(), 'accounts': set(),
-                                                   'ids': set(), 'dnd': False})
-            rec['tags'].update(t.lower() for t in (c.get('tags') or []))
-            rec['accounts'].add(label)
-            rec['ids'].add(c['id'])
-            rec['dnd'] = rec['dnd'] or bool(c.get('dnd'))
+    people, partial = tagged(clients, WARMUP_TAG)
     if not people:
         return None
 
@@ -166,10 +140,12 @@ def warmup_cohort(clients, subs=None):
     subs = subs or {}
     clicked = opened = 0
     for r in people.values():
-        rows = [subs[i] for i in r['ids'] if i in subs]
-        if rows:
+        # Named `seen`, not `rows`: this used to shadow the funnel rows built
+        # above and shipped an empty tag table to the dashboard.
+        seen = [subs[i] for i in r['ids'] if i in subs]
+        if seen:
             clicked += 1
-            if any(x.get('lessons') for x in rows):
+            if any(x.get('lessons') for x in seen):
                 opened += 1
     touched = sum(1 for r in people.values()
                   if any(t.startswith('cs ') for t in r['tags'])
