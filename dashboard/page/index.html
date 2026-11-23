@@ -153,6 +153,12 @@
     <div class="tw" id="cfunnel"></div>
   </section>
 
+  <section class="panel" id="cwarmpanel" hidden>
+    <h2>Bootcamp warm-up</h2>
+    <p class="ph" id="cwarmph">Only the people carrying the bootcamp registration tag, because the course tags are shared with the 29,000-person email re-engagement waves and a bare count cannot tell the two apart. Registrants are deduped across both GoHighLevel sub-accounts and their tags merged, since the course app writes to whichever account answers for the id in the link.</p>
+    <div class="tw" id="cwarm"></div>
+  </section>
+
   <section class="panel">
     <h2>Raw course activity</h2>
     <p class="ph">Straight from the course app’s own report, which counts every visit including people it cannot identify, so these totals run ahead of the tagged numbers above. Anonymous visitors appear here and nowhere else.</p>
@@ -239,6 +245,9 @@
     ctiles: document.getElementById('ctiles'),
     cfunnel: document.getElementById('cfunnel'),
     cevents: document.getElementById('cevents'),
+    cwarm: document.getElementById('cwarm'),
+    cwarmph: document.getElementById('cwarmph'),
+    cwarmpanel: document.getElementById('cwarmpanel'),
     cemail: document.getElementById('cemail'),
     cemailph: document.getElementById('cemailph'),
     jtiles: document.getElementById('jtiles'),
@@ -569,11 +578,40 @@
       }),
       'No course tags on anyone yet.');
 
+    drawWarmup();
+
     simpleTable(el.cevents, ['Event', 'Total'],
       EVENTS.filter(function (e) { return e[0] in ev; })
             .map(function (e) { return [e[1], ev[e[0]]]; }),
       'The course report has not been read yet.');
 
+  }
+
+  // The warm-up panel stays off the page until the send has actually gone
+  // out, so an empty table never reads as "nobody watched it".
+  function drawWarmup() {
+    var w = course && course.warmup;
+    if (!w || !w.registered) {
+      if (el.cwarmpanel) el.cwarmpanel.hidden = true;
+      return;
+    }
+    if (el.cwarmpanel) el.cwarmpanel.hidden = false;
+    var reg = w.registered;
+    var rows = [['Registered for the bootcamp', reg, ''],
+                ['Touched the course at all', n(w.any_course_activity),
+                 pct(w.any_course_activity, reg) + ' of registrants'],
+                ['Not touched it yet', n(w.no_course_activity),
+                 pct(w.no_course_activity, reg) + ' — the follow-up list']];
+    (w.funnel || []).forEach(function (r) {
+      rows.push([r.label, typeof r.count === 'number' ? r.count : '—',
+                 typeof r.count === 'number' ? pct(r.count, reg) + ' of registrants' : '']);
+    });
+    if (w.excluded_from_sending) {
+      rows.push(['Cannot be sent to', w.excluded_from_sending,
+                 'DND, do not contact or do not email']);
+    }
+    simpleTable(el.cwarm, ['Registrants', 'People', 'Share'], rows,
+      'No bootcamp registrants yet.');
   }
 
   // ---- Juan's call lists ------------------------------------------------

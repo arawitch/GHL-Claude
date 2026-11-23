@@ -90,6 +90,87 @@ def report_numbers(url):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Bootcamp warm-up cohort
+#
+# The free course is being sent to bootcamp registrants as pre-work, and the
+# `cs ...` tags are shared with the 29,000-person email re-engagement waves, so
+# a bare tag count cannot answer "are the registrants watching it". The answer
+# is the intersection: `bootcamp registered` AND each course tag.
+#
+# Two complications, both handled here rather than in the page:
+#   * 94.8% of contacts exist in BOTH sub-accounts, so counting each account
+#     and adding would roughly double the cohort. The two lists are pulled in
+#     full and deduped on email, falling back to phone.
+#   * the course app writes its tag to whichever account answers for the id in
+#     the link, so one person's registration tag and course tags can sit on
+#     different records. Tags are unioned per person before counting.
+# The cohort is small (low hundreds), so this is two paged searches, not a
+# per-contact walk.
+WARMUP_TAG = 'bootcamp registered'
+EXCLUDE_TAGS = ('do not contact', 'do not email', 'never send')
+
+
+def _norm_phone(v):
+    d = re.sub(r'\D', '', v or '')
+    return d[-10:] if len(d) >= 10 else ''
+
+
+def _identity(c):
+    """One key per real person, so the two sub-accounts can be merged."""
+    email = (c.get('email') or '').strip().lower()
+    if email:
+        return 'e:' + email
+    phone = _norm_phone(c.get('phone'))
+    return ('p:' + phone) if phone else 'id:' + str(c.get('id'))
+
+
+def warmup_cohort(clients):
+    """Course progress for the people carrying WARMUP_TAG, deduped.
+
+    `clients` is a list of (account_label, GHLClient). Returns None when no
+    account carries the tag at all, so the panel stays off the page until the
+    warm-up actually goes out.
+    """
+    people = {}
+    for label, cl in clients:
+        try:
+            found = cl.search_contacts(
+                filters=[{'field': 'tags', 'operator': 'eq', 'value': WARMUP_TAG}])
+        except Exception as e:
+            print('warmup: %s account search failed: %s' % (label, e), file=sys.stderr)
+            continue
+        for c in found:
+            rec = people.setdefault(_identity(c), {'tags': set(), 'accounts': set(),
+                                                   'dnd': False})
+            rec['tags'].update(t.lower() for t in (c.get('tags') or []))
+            rec['accounts'].add(label)
+            rec['dnd'] = rec['dnd'] or bool(c.get('dnd'))
+    if not people:
+        return None
+
+    course_tags = [(key, tag, lab) for key, tag, lab in FUNNEL
+                   if tag.startswith('cs lesson') or key in
+                   ('guide', 'cheat_sheet', 'offer_click')]
+    rows = [{'key': key, 'tag': tag, 'label': lab,
+             'count': sum(1 for r in people.values() if tag in r['tags'])}
+            for key, tag, lab in course_tags]
+
+    touched = sum(1 for r in people.values()
+                  if any(t.startswith('cs ') for t in r['tags']))
+    unreachable = sum(1 for r in people.values()
+                      if r['dnd'] or any(t in r['tags'] for t in EXCLUDE_TAGS))
+    return {
+        'tag': WARMUP_TAG,
+        'registered': len(people),
+        'in_both_accounts': sum(1 for r in people.values() if len(r['accounts']) > 1),
+        'any_course_activity': touched,
+        'no_course_activity': len(people) - touched,
+        'excluded_from_sending': unreachable,
+        'funnel': rows,
+    }
+
+
 def main():
     outdir = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'dashout')
     cl = GHLClient(os.environ['GHL_SMS_API_KEY'], os.environ['GHL_SMS_LOCATION_ID'])
@@ -108,6 +189,17 @@ def main():
             print('tag %s failed: %s' % (tag, e), file=sys.stderr)
             doc['funnel'].append({'key': key, 'tag': tag, 'label': label,
                                   'count': None})
+
+    clients = [('sms', cl)]
+    if os.environ.get('GHL_EMAIL_API_KEY') and os.environ.get('GHL_EMAIL_LOCATION_ID'):
+        clients.append(('email', GHLClient(os.environ['GHL_EMAIL_API_KEY'],
+                                          os.environ['GHL_EMAIL_LOCATION_ID'])))
+    try:
+        warm = warmup_cohort(clients)
+        if warm:
+            doc['warmup'] = warm
+    except Exception as e:
+        print('warmup cohort failed: %s' % e, file=sys.stderr)
 
     url = os.environ.get('COURSE_REPORT_URL')
     if url:
